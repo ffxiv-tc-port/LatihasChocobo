@@ -1,17 +1,46 @@
-﻿<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <OutputPath>bin</OutputPath>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <LangVersion>13.0</LangVersion>
+    <DalamudApiLevel>12</DalamudApiLevel>
   </PropertyGroup>
   <PropertyGroup>
-    <Version>7.51.2.0</Version>
-    <RepoUrl>https://github.com/Latihas/LatihasChocobo</RepoUrl>
-    <Author>Latihas</Author>
+    <Version>7.15.0.0-TCfix</Version>
+    <RepoUrl>https://github.com/Lother/LatihasChocobo</RepoUrl>
+    <Author>Latihas, Lother</Author>
     <Name>LatihasChocobo</Name>
-    <Description>陆行鸟竞赛自动化</Description>
-    <Punchline>陆行鸟竞赛自动化</Punchline>
+    <Description>自動陸行鳥競賽</Description>
+    <Punchline>自動陸行鳥競賽</Punchline>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == ''">
-    <DalamudLibPath>$(appdata)\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' != 'true'">
+    <DalamudLibPath>$(appdata)\FFXIVSimpleLauncher\Dalamud\Injector</DalamudLibPath>
     <AssemblySearchPaths>$(AssemblySearchPaths);$(DalamudLibPath)</AssemblySearchPaths>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <DalamudLibPath>$(MSBuildProjectDirectory)\lib</DalamudLibPath>
+    <AssemblySearchPaths>$(AssemblySearchPaths);$(DalamudLibPath)</AssemblySearchPaths>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(GITHUB_ACTIONS)' != 'true'">
+    <Reference Remove="Dalamud" />
+    <Reference Include="Dalamud">
+      <HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="ImGui.NET">
+      <HintPath>$(DalamudLibPath)\ImGui.NET.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <Reference Remove="Dalamud" />
+    <Reference Include="Dalamud">
+      <HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="ImGui.NET">
+      <HintPath>$(DalamudLibPath)\ImGui.NET.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
 </Project>

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Numerics;
-using Dalamud.Bindings.ImGui;
+using ImGuiNET;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -15,11 +15,18 @@ namespace LatihasChocobo;
 [SuppressMessage("ReSharper", "InconsistentNaming")]
 [SuppressMessage("ReSharper", "InvertIf")]
 [SuppressMessage("ReSharper", "SpecifyACultureInStringConversionExplicitly")]
-public class MainWindow() : Window("Chocobo=>CCB?") {
+public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false) {
 	private const ImGuiTableFlags ImGuiTableFlag = ImGuiTableFlags.Borders | ImGuiTableFlags.Resizable | ImGuiTableFlags.RowBg;
 
 	private static readonly Vector4 green = new(0, 1, 0, 1),
 		red = new(1, 0, 0, 1);
+
+	private static string AbilityName(byte id) => id switch {
+		0x2E => "經驗值提高III",
+		0x1D => "體力消耗降低II",
+		0x00 => "無",
+		_ => $"未知(0x{id:X2})"
+	};
 
 	private static void NewTab(string tabname, Action act) {
 		if (ImGui.BeginTabItem(tabname)) {
@@ -46,16 +53,16 @@ public class MainWindow() : Window("Chocobo=>CCB?") {
 
 	[SuppressMessage("ReSharper", "ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator")]
 	public override unsafe void Draw() {
-		if (ObjectTable.LocalPlayer is null) return;
+		if (ClientState.LocalPlayer is null) return;
 		if (ImGui.BeginTabBar("tab")) {
-			NewTab("赛鸟", () => {
-				if (ImGui.Checkbox("启用", ref Configuration.Enabled)) {
+			NewTab("賽鳥", () => {
+				if (ImGui.Checkbox("啟用", ref Configuration.Enabled)) {
 					Configuration.Save();
 					if (!Configuration.Enabled) isRunning = false;
 				}
 				ImGui.Separator();
 				if (!Configuration.Enabled) return;
-				if (ImGui.Checkbox("进入指定地点自动循环匹配", ref Configuration.AutoDuty)) {
+				if (ImGui.Checkbox("進入指定地點自動循環匹配", ref Configuration.AutoDuty)) {
 					Configuration.Save();
 					if (Configuration.AutoDuty) {
 						if (Configuration.AutoDutyTerritory.Split('|').Contains(ClientState.TerritoryType.ToString()))
@@ -64,60 +71,65 @@ public class MainWindow() : Window("Chocobo=>CCB?") {
 				}
 				ImGui.SameLine();
 				if (ImGui.Button("立刻匹配")) RequestRace();
-				if (ImGui.InputText("循环区域(用竖线|分隔)", ref Configuration.AutoDutyTerritory)) Configuration.Save();
-				if (ImGui.InputInt("循环间延迟(s)", ref Configuration.AutoDutyWait)) Configuration.Save();
-				ImGui.Text($"当前区域: {ClientState.TerritoryType}, 经验: {RaceChocoboManager.Instance()->ExperienceCurrent}/{RaceChocoboManager.Instance()->ExperienceMax}");
-				if (ImGui.InputInt("按键时长(ms)", ref Configuration.PressMs)) Configuration.Save();
-				if (ImGui.InputFloat("超速也加速概率", ref Configuration.SpeedHighW, 1)) Configuration.Save();
-				if (ImGui.Checkbox("低体力/路长禁用超速加速", ref Configuration.DisableSpeedUpWhenLowHP)) Configuration.Save();
-				if (ImGui.Checkbox("高体力/路长强制超速加速(后25%)", ref Configuration.EnableSpeedUpWhenHighHP)) Configuration.Save();
-				if (ImGui.Checkbox("自动使用道具", ref Configuration.AutoUseItem)) Configuration.Save();
-				if (ImGui.Checkbox("满级模式", ref Configuration.MaxLevelMode)) Configuration.Save();
+				if (ImGui.InputText("循環區域(用豎線|分隔)", ref Configuration.AutoDutyTerritory, 256)) Configuration.Save();
+				if (ImGui.InputInt("循環間延遲(s)", ref Configuration.AutoDutyWait)) Configuration.Save();
+				var mgr = RaceChocoboManager.Instance();
+				ImGui.Text($"當前區域: {ClientState.TerritoryType}, 競賽等級: {mgr->Rank}, 經驗: {mgr->ExperienceCurrent}/{mgr->ExperienceMax}");
+				ImGui.Text($"可訓練次數: {mgr->SessionsAvailable}");
+				ImGui.Text($"最高速度:{mgr->MaximumSpeed}% 加速力:{mgr->Acceleration}% 體力:{mgr->Endurance}% 持久力:{mgr->Stamina}% 適應力:{mgr->Cunning}%");
+				ImGui.Text($"先天性:{AbilityName(mgr->AbilityHereditary)}  後天性:{AbilityName(mgr->AbilityLearned)}");
+				if (ImGui.InputInt("按鍵時長(ms)", ref Configuration.PressMs)) Configuration.Save();
+				if (ImGui.InputFloat("超速也加速機率", ref Configuration.SpeedHighW, 1)) Configuration.Save();
+				if (ImGui.Checkbox("低體力/路長禁用超速加速", ref Configuration.DisableSpeedUpWhenLowHP)) Configuration.Save();
+				if (ImGui.Checkbox("高體力/路長強制超速加速(後25%)", ref Configuration.EnableSpeedUpWhenHighHP)) Configuration.Save();
+				if (ImGui.Checkbox("自動使用道具", ref Configuration.AutoUseItem)) Configuration.Save();
+				if (ImGui.Checkbox("滿級模式", ref Configuration.MaxLevelMode)) Configuration.Save();
 				ImGui.Separator();
 				ImGui.Text($"可使用物品：{(canUseItem ? "是" : "否")}。超速：{(speedHigh ? "是" : "否")}。L:{L}。H:{H}");
-				ImGui.Text($"体力：{HpPercent}/剩余路程：{RacePercent}");
+				ImGui.Text($"體力：{HpPercent}/剩餘路程：{RacePercent}");
 				List<string[]> data = [];
 				foreach (var obj in GetEventObjects()) {
 					var name = "UNK";
-					if (BadObjectType.TryGetValue(obj.BaseId, out var v1)) name = v1;
-					if (GoodObjectType.TryGetValue(obj.BaseId, out var v2)) name = v2;
+					if (BadObjectType.TryGetValue(obj.DataId, out var v1)) name = v1;
+					if (GoodObjectType.TryGetValue(obj.DataId, out var v2)) name = v2;
 					data.Add([
 						GetTargetSide(obj).ToString(),
 						obj.Position.X.ToString(),
 						obj.Position.Y.ToString(),
 						obj.Position.Z.ToString(),
-						((int)Vector3.Distance(ObjectTable.LocalPlayer.Position, obj.Position)).ToString(),
-						obj.BaseId.ToString(),
+						((int)Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position)).ToString(),
+						obj.DataId.ToString(),
 						name
 					]);
 				}
-				NewTable(["状态", "X", "Y", "Z", "距离", "DataId", "名称"], data);
+				NewTable(["狀態", "X", "Y", "Z", "距離", "DataId", "名稱"], data);
 			});
 			NewTab("背包", () => {
-				if (ImGui.InputInt("筛选星级(OR)", ref Configuration.CcbMaxStar)) Configuration.Save();
-				if (ImGui.InputText("筛选颜色(用竖线|隔开)", ref Configuration.CcbColor)) Configuration.Save();
+				if (ImGui.InputInt("篩選星級(OR)", ref Configuration.CcbMaxStar)) Configuration.Save();
 				List<string[]> data = [];
 				string? name = null;
+				string? itemType = null;
 				string? color = null;
+				string? pedigree = null;
+				string? ability = null;
+				string? breedCount = null;
 				try {
-					var ItemDetail = (AtkUnitBase*)GameGui.GetAddonByName("ItemDetail").Address;
+					var ItemDetail = (AtkUnitBase*)GameGui.GetAddonByName("ItemDetail", 1);
 					if (ItemDetail->IsVisible) {
+						foreach (var TextNode in AllAtkUnitBaseByType(ItemDetail, (int)NodeType.Text)) {
+							var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();
+							if (str.Contains("性陸行鳥配種登記書")) { name = str; itemType = "配種"; }
+							else if (str.Contains("性陸行鳥出賽登記書")) { name = str; itemType = "出賽"; }
+							else if (str.Contains("性陸行鳥退役登記書")) { name = str; itemType = "退役"; }
+						}
 						foreach (var BaseComponentNodeA in AllAtkUnitBaseByType(ItemDetail, 1005)) {
 							var TextNodeA = AllAtkUnitBaseByType(BaseComponentNodeA.Node->GetComponent()->UldManager, (int)NodeType.Text);
 							foreach (var TextNode in TextNodeA) {
 								var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();
-								if (str.StartsWith("颜色：")) {
-									color = str;
-									break;
-								}
-							}
-							if (color != null) break;
-						}
-						foreach (var TextNode in AllAtkUnitBaseByType(ItemDetail, (int)NodeType.Text)) {
-							var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();
-							if (str.Contains("性陆行鸟配种登记书")) {
-								name = str.Substring(str.IndexOf("性陆行鸟配种登记书", StringComparison.Ordinal) - 3, 12);
-								break;
+								if (str.Contains("顏色：")) color = str;
+								else if (str.Contains("血統等級：")) pedigree = str;
+								else if (str.Contains("競賽能力：")) ability = str;
+								else if (str.Contains("可交配次數：")) breedCount = str;
 							}
 						}
 						foreach (var node in AllAtkUnitBaseByType(ItemDetail, (int)NodeType.Res)) {
@@ -142,29 +154,59 @@ public class MainWindow() : Window("Chocobo=>CCB?") {
 				} catch (Exception) {
 					// ignored
 				}
-				var isValid = data.Count != 0 && name != null && color != null;
+				var isValid = data.Count != 0 && name != null && itemType != null && color != null;
 				var maxcount = 0;
 				foreach (var obj in data) {
 					foreach (var p in obj) {
-						if (p.IsNullOrEmpty()) {
-							isValid = false;
-							break;
-						}
-						if (p == "\u2605\u2605\u2605\u2605") maxcount++;
+						if (p.IsNullOrEmpty()) { isValid = false; break; }
 					}
 					if (!isValid) break;
+					if (obj[1] == "\u2605\u2605\u2605\u2605" && obj[2] == "\u2605\u2605\u2605\u2605") maxcount++;
 				}
 				if (isValid) {
-					var preserve = Configuration.CcbMaxStar <= maxcount || Configuration.CcbColor.Split('|').Contains(color![3..]);
-					NewTable(["属性", "雄星级", "雌星级"], data);
-					ImGui.Text(name);
-					ImGui.Text($"满星数量: {maxcount}, {color}");
+					var preserve = Configuration.CcbMaxStar <= maxcount;
+					var maleColor = new Vector4(0.4f, 0.6f, 1f, 1f);
+					var femaleColor = new Vector4(1f, 0.5f, 0.6f, 1f);
+					var yellowBg = ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 0.5f, 0.15f));
+					var lineH = ImGui.GetTextLineHeightWithSpacing();
+					foreach (var row in data) {
+						var fullStar = row[1] == "★★★★" && row[2] == "★★★★";
+						var rowPos = ImGui.GetCursorScreenPos();
+						if (fullStar)
+							ImGui.GetWindowDrawList().AddRectFilled(rowPos, new Vector2(rowPos.X + ImGui.GetContentRegionAvail().X, rowPos.Y + lineH), yellowBg);
+						ImGui.Text(row[0]);
+						ImGui.SameLine(75);
+						ImGui.TextColored(maleColor, $"♂{row[1]}");
+						ImGui.SameLine(165);
+						ImGui.TextColored(femaleColor, $"♀{row[2]}");
+					}
+					ImGui.Separator();
+					var isMale = name!.Contains("雄");
+					var genderColor = isMale ? maleColor : femaleColor;
+					var genderSym = isMale ? "♂" : "♀";
+					var pedigreeVal = pedigree != null ? pedigree[(pedigree.IndexOf('：') + 1)..] : "?";
+					var colorVal = color != null ? color[(color.IndexOf('：') + 1)..] : "?";
+					var breedVal = breedCount != null ? breedCount[(breedCount.IndexOf('：') + 1)..] : null;
+					var abilityVal = ability != null ? ability[(ability.IndexOf('：') + 1)..] : "?";
+					ImGui.TextColored(genderColor, genderSym);
+					ImGui.SameLine();
+					if (itemType == "出賽") {
+						var tPos = ImGui.GetCursorScreenPos();
+						var tSize = ImGui.CalcTextSize($"[{itemType}]");
+						ImGui.GetWindowDrawList().AddRectFilled(tPos, new Vector2(tPos.X + tSize.X, tPos.Y + tSize.Y), ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 0.3f, 0.4f)));
+					}
+					ImGui.Text($"[{itemType}]");
+					ImGui.SameLine(); ImGui.Text($"  血統:{pedigreeVal}  {colorVal}");
+					ImGui.Text($"競賽能力:{abilityVal}");
+					var line3 = $"滿星:{maxcount}";
+					if (breedVal != null) line3 += $"  可交配:{breedVal}";
+					ImGui.Text(line3);
 					ImGui.PushStyleColor(ImGuiCol.Text, preserve ? green : red);
-					ImGui.Text($"建议{(preserve ? "保留" : "舍弃")}");
+					ImGui.Text($"建議{(preserve ? "保留" : "捨棄")}");
 					ImGui.PopStyleColor();
-				} else ImGui.Text("鼠标移动到配种登记书上以查看");
+				} else ImGui.Text("滑鼠移動到配種登記書上以查看");
 			});
-			NewTab("按键", () => {
+			NewTab("按鍵", () => {
 				var KC_W = Configuration.KC_W;
 				if (ImGui.InputInt("KC_W(前)", ref KC_W)) {
 					Configuration.KC_W = KC_W;

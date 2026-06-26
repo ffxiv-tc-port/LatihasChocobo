@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.Types;
@@ -11,8 +10,10 @@ using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
+using System.Runtime.InteropServices;
 using Dalamud.Plugin.Services;
-using FFXIVClientStructs.FFXIV.Client.Network;
+using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using static LatihasChocobo.Constant;
 
@@ -34,21 +35,19 @@ public sealed class Plugin : IDalamudPlugin {
 	internal static bool isRunning;
 	private static readonly Random _random = new();
 	internal static readonly Dictionary<uint, string> GoodObjectType = new() {
-		[2005024] = "黄宝箱",
-		[2005025] = "蓝宝箱",
-		[2005038] = "蓝加速",
-		[2005041] = "绿体力"
+		[2005024] = "黃寶箱",
+		[2005025] = "藍寶箱",
+		[2005038] = "藍加速",
+		[2005041] = "綠體力"
 	};
 	internal static readonly Dictionary<uint, string> BadObjectType = new() {
-		[2005039] = "紫减速",
-		[2005040] = "红眩晕"
+		[2005039] = "紫減速",
+		[2005040] = "紅眩暈"
 	};
 	private static readonly Dictionary<int, long> PressTime = new();
 	internal static bool speedHigh, canUseItem, L, H;
 	internal static float HpPercent;
 	internal static int RacePercent;
-
-	private static SendPacketDelegate? SendPacket;
 
 	private static long LastPress2;
 	private readonly MainWindow _mainWindow;
@@ -60,7 +59,7 @@ public sealed class Plugin : IDalamudPlugin {
 		_mainWindow = new MainWindow();
 		WindowSystem.AddWindow(_mainWindow);
 		var p = new CommandInfo(OnCommand) {
-			HelpMessage = "打开主界面"
+			HelpMessage = "打開主介面"
 		};
 		CommandManager.AddHandler("/lc", p);
 		CommandManager.AddHandler("/latihaschocobo", p);
@@ -70,6 +69,10 @@ public sealed class Plugin : IDalamudPlugin {
 		Framework.Update += Press;
 		ClientState.TerritoryChanged += TerritoryChanged;
 		if (InRace()) isRunning = true;
+		var sheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.ContentFinderCondition>();
+		if (sheet != null)
+			foreach (var row in sheet)
+				if (row.ContentType.RowId == 18) { _chocoboRaceCfcId = row.RowId; break; }
 	}
 
 	private static int PRESS_TIME => Configuration.PressMs * 10000;
@@ -80,9 +83,13 @@ public sealed class Plugin : IDalamudPlugin {
 	[PluginService] private static ICommandManager CommandManager { get; set; } = null!;
 	[PluginService] private static IFramework Framework { get; set; } = null!;
 	[PluginService] internal static IObjectTable ObjectTable { get; set; } = null!;
-	[PluginService] internal static ISigScanner SigScanner { get; private set; } = null!;
 	[PluginService] internal static IClientState ClientState { get; private set; } = null!;
 	[PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+	[PluginService] private static IDataManager DataManager { get; set; } = null!;
+	[PluginService] private static IChatGui ChatGui { get; set; } = null!;
+
+	private static uint _chocoboRaceCfcId;
+	private static byte _lastRank;
 
 	public void Dispose() {
 		WindowSystem.RemoveAllWindows();
@@ -96,8 +103,8 @@ public sealed class Plugin : IDalamudPlugin {
 	private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
 	public static Direction GetTargetSide(IGameObject target) {
-		var player = ObjectTable.LocalPlayer!;
-		if (!BadObjectType.ContainsKey(target.BaseId) && !GoodObjectType.ContainsKey(target.BaseId)) return Direction.InValid;
+		var player = ClientState.LocalPlayer!;
+		if (!BadObjectType.ContainsKey(target.DataId) && !GoodObjectType.ContainsKey(target.DataId)) return Direction.InValid;
 		var playerPos = player.Position;
 		var targetPos = target.Position;
 		var rotation = player.Rotation;
@@ -116,15 +123,15 @@ public sealed class Plugin : IDalamudPlugin {
 		var angleDeg = (float)(Math.Acos(cosTheta) * 180 / Math.PI);
 		if (distance < (Configuration.MaxLevelMode ? 13 : 8) && angleDeg < 20)
 			return zDiff > 2 ? Direction.FrontUp : Direction.Front;
-		if (distance < (Configuration.MaxLevelMode ? 20 : 15) && angleDeg < 15 && GoodObjectType.ContainsKey(target.BaseId))
+		if (distance < (Configuration.MaxLevelMode ? 20 : 15) && angleDeg < 15 && GoodObjectType.ContainsKey(target.DataId))
 			return Direction.Front;
 		return crossProduct > 0 ? Direction.Right : Direction.Left;
 	}
 
 	internal static IGameObject[] GetEventObjects() {
-		if (ObjectTable.LocalPlayer is null) return [];
+		if (ClientState.LocalPlayer is null) return [];
 		return ObjectTable.Where(obj =>
-			Vector3.Distance(ObjectTable.LocalPlayer.Position, obj.Position) < 75
+			Vector3.Distance(ClientState.LocalPlayer.Position, obj.Position) < 75
 			&& obj.ObjectKind == ObjectKind.EventObj
 		).ToArray();
 	}
@@ -192,7 +199,7 @@ public sealed class Plugin : IDalamudPlugin {
 	private static unsafe bool CanUseItem() {
 		AtkImageNode* FinalImageNode = null;
 		try {
-			var _ActionBar = (AtkUnitBase*)GameGui.GetAddonByName("_ActionBar").Address;
+			var _ActionBar = (AtkUnitBase*)GameGui.GetAddonByName("_ActionBar", 1);
 			foreach (var BaseComponentNodew in AllAtkUnitBaseByType(_ActionBar, 1005)) {
 				var BaseComponentNode = BaseComponentNodew.Node;
 				var TextNode = FirstAtkUnitBaseByType(BaseComponentNode->GetComponent()->UldManager, (int)NodeType.Text);
@@ -223,31 +230,87 @@ public sealed class Plugin : IDalamudPlugin {
 		addon->ReceiveEvent(resetEvt->State.EventType, (int)resetEvt->Param, btnRes.AtkEventManager.Event);
 	}
 
-	internal static void RequestRace() {
-		SendPacket ??= Marshal.GetDelegateForFunctionPointer<SendPacketDelegate>(SigScanner.ScanText("E8 ?? ?? ?? ?? 48 8B D6 48 8B CF E8 ?? ?? ?? ?? 48 8B 8C 24"));
-		unsafe {
-			fixed (byte* pCustomPacket = new byte[] {
-				       OPCODE_DUTY_1, OPCODE_DUTY_2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00,
-				       0x00, 0x00, 0x00,
-				       0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-			       }) {
-				SendPacket(
-					FFXIVClientStructs.FFXIV.Client.System.Framework.Framework.Instance()->NetworkModuleProxy,
-					pCustomPacket,
-					0,
-					0
-				);
+	private static unsafe bool ClickContentsFinderJoin() {
+		var cfPtr = GameGui.GetAddonByName("ContentsFinder", 1);
+		if (cfPtr == nint.Zero) return false;
+		var cf = (AtkUnitBase*)cfPtr;
+		if (!cf->IsVisible) return false;
+		try {
+			foreach (var nodeWrapper in AllAtkUnitBaseByType(cf, 1001)) {
+				var btn = nodeWrapper.Node->GetAsAtkComponentButton();
+				if (!btn->IsEnabled || !nodeWrapper.Node->IsVisible()) continue;
+				try {
+					var textNode = FirstAtkUnitBaseByType(nodeWrapper.Node->GetComponent()->UldManager, (int)NodeType.Text);
+					var text = textNode->GetAsAtkTextNode()->NodeText.ToString();
+					if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
+				} catch { }
+				Click(btn, cf);
+				Log.Info("[RequestRace] 點擊 ContentsFinder 参加按鈕");
+				return true;
 			}
+			// 找不到「参加」文字，試點第一個可用按鈕
+			foreach (var nodeWrapper in AllAtkUnitBaseByType(cf, 1001)) {
+				var btn = nodeWrapper.Node->GetAsAtkComponentButton();
+				if (!btn->IsEnabled || !nodeWrapper.Node->IsVisible()) continue;
+				Click(btn, cf);
+				Log.Info("[RequestRace] 點擊 ContentsFinder 第一個可用按鈕");
+				return true;
+			}
+		} catch (Exception ex) {
+			Log.Warning($"[RequestRace] ContentsFinder 按鈕點擊失敗: {ex.Message}");
+		}
+		return false;
+	}
+
+	private static unsafe void OpenContentsFinder() {
+		try {
+			var agent = AgentContentsFinder.Instance();
+			if (agent == null) return;
+			if (_chocoboRaceCfcId != 0) agent->OpenRegularDuty(_chocoboRaceCfcId);
+			else AgentModule.Instance()->GetAgentByInternalId(AgentId.ContentsFinder)->Show();
+		} catch (Exception ex) {
+			Log.Warning($"[RequestRace] 開啟義務搜尋器失敗: {ex.Message}");
 		}
 	}
 
+	internal static void RequestRace() {
+		// 若 ContentsFinder 已開啟，直接點參加
+		if (ClickContentsFinderJoin()) return;
+
+		// 否則開啟義務搜尋器，再延遲點擊
+		Task.Run(async () => {
+			await Framework.RunOnFrameworkThread(OpenContentsFinder);
+			await Task.Delay(1200);
+			await Framework.RunOnFrameworkThread(() => ClickContentsFinderJoin());
+		});
+	}
+
+	private static void Notify() {
+		unsafe { FFXIVClientStructs.FFXIV.Client.UI.UIGlobals.PlaySoundEffect(36); }
+	}
+
+	private static unsafe void CheckRankUp() {
+		var mgr = RaceChocoboManager.Instance();
+		var rank = mgr->Rank;
+		if (_lastRank != 0 && rank == 40 && _lastRank == 39 && Configuration.AutoDuty) {
+			Configuration.AutoDuty = false;
+			Configuration.Save();
+			isRunning = false;
+			ChatGui.Print("[LatihasChocobo] 已達40級，自動循環已停止。");
+			Notify();
+			Log.Info("[RankUp] 競賽等級升至40，AutoDuty 已關閉");
+		}
+		_lastRank = rank;
+	}
+
 	private static unsafe void Press(IFramework framework) {
+		CheckRankUp();
 		if (!Configuration.Enabled || !isRunning) return;
 		// End
 		try {
-			var ptr = GameGui.GetAddonByName("RaceChocoboResult");
+			var ptr = GameGui.GetAddonByName("RaceChocoboResult", 1);
 			if (ptr != IntPtr.Zero) {
-				var RaceChocoboResult = (AtkUnitBase*)ptr.Address;
+				var RaceChocoboResult = (AtkUnitBase*)ptr;
 				var ButtonComponentNode = FirstAtkUnitBaseByType(RaceChocoboResult->UldManager, 1001)->GetAsAtkComponentButton();
 				Click(ButtonComponentNode, RaceChocoboResult);
 			}
@@ -257,7 +320,7 @@ public sealed class Plugin : IDalamudPlugin {
 		// Race
 		speedHigh = false;
 		try {
-			var _RaceChocoboParameter = (AtkUnitBase*)GameGui.GetAddonByName("_RaceChocoboParameter").Address;
+			var _RaceChocoboParameter = (AtkUnitBase*)GameGui.GetAddonByName("_RaceChocoboParameter", 1);
 			var _RaceChocoboParameterUldManager = _RaceChocoboParameter->UldManager;
 			var _RaceChocoboParameterSpeedNode = _RaceChocoboParameterUldManager.NodeList[_RaceChocoboParameterUldManager.NodeListCount - 1]->GetAsAtkImageNode();
 			var texture = _RaceChocoboParameterSpeedNode->PartsList->Parts[_RaceChocoboParameterSpeedNode->PartId].UldAsset;
@@ -272,11 +335,11 @@ public sealed class Plugin : IDalamudPlugin {
 		}
 		try {
 			var found = false;
-			var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList").Address;
+			var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList", 1);
 			foreach (var BaseComponentNode in AllAtkUnitBaseByType(_ToDoList, 1008)) {
 				foreach (var NodeText in AllAtkUnitBaseByType(BaseComponentNode.Node->GetComponent()->UldManager, (int)NodeType.Text)) {
 					var str = NodeText.Node->GetAsAtkTextNode()->NodeText.ToString();
-					if (!str.StartsWith("进度：")) continue;
+					if (!str.StartsWith("進度：")) continue;
 					RacePercent = 100 - int.Parse(str[3..^1]);
 					found = true;
 					break;
@@ -312,13 +375,13 @@ public sealed class Plugin : IDalamudPlugin {
 		IGameObject? target = null;
 		foreach (var obj in ObjectTable) {
 			if (obj.ObjectKind != ObjectKind.EventObj) continue;
-			var newdis = Vector3.Distance(ObjectTable.LocalPlayer!.Position, obj.Position);
+			var newdis = Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position);
 			if (!(newdis < maxDist)) continue;
 			target = obj;
 			maxDist = newdis;
 		}
 		if (target == null) return;
-		var isBad = BadObjectType.ContainsKey(target.BaseId);
+		var isBad = BadObjectType.ContainsKey(target.DataId);
 		switch (GetTargetSide(target)) {
 			case Direction.Left:
 				SendMessage(mwh, WM_KEYUP, isBad ? Configuration.KC_A : Configuration.KC_D, 0);
@@ -344,7 +407,7 @@ public sealed class Plugin : IDalamudPlugin {
 
 	private static bool InRace() => ClientState.TerritoryType is 389 or 390 or 391;
 
-	private static void TerritoryChanged(uint u) {
+	private static void TerritoryChanged(ushort u) {
 		if (InRace())
 			Task.Run(async () => {
 				await Task.Delay(Configuration.AutoDutyWait * 1000);
@@ -379,11 +442,9 @@ public sealed class Plugin : IDalamudPlugin {
 		}
 	}
 
-	private void OnCommand(string command, string args) => OnCommand();
+	private void OnCommand(string command, string args) => _mainWindow.Toggle();
 
 	private void OnCommand() => _mainWindow.Toggle();
-
-	private unsafe delegate bool SendPacketDelegate(NetworkModuleProxy* module, byte* packet, uint a3, uint a4);
 
 	internal class AtkResNodeWrapper {
 		public unsafe readonly AtkResNode* Node;
