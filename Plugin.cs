@@ -33,22 +33,28 @@ public sealed class Plugin : IDalamudPlugin {
 
 	private static IntPtr mwh;
 	internal static bool isRunning;
+	internal static int LastRaceExpGain;
+	private static short _expOnRaceEnter;
+	private static short _expMaxOnRaceEnter;
 	private static readonly Random _random = new();
 	internal static readonly Dictionary<uint, string> GoodObjectType = new() {
 		[2005024] = "黃寶箱",
 		[2005025] = "藍寶箱",
 		[2005038] = "藍加速",
-		[2005041] = "綠體力"
+		[2005041] = "綠體力",
+		[3597] = "特殊NPC"
 	};
 	internal static readonly Dictionary<uint, string> BadObjectType = new() {
 		[2005039] = "紫減速",
-		[2005040] = "紅眩暈"
+		[2005040] = "紅眩暈",
+		[3595] = "障礙怪物",
+		[3596] = "移動障礙怪物"
 	};
 	private static readonly Dictionary<int, long> PressTime = new();
 	internal static bool speedHigh, canUseItem, L, H;
 	internal static float HpPercent;
 	internal static int RacePercent;
-
+	private static long _lastItemUse;
 	private static long LastPress2;
 	private readonly MainWindow _mainWindow;
 	// ReSharper disable once MemberCanBePrivate.Global
@@ -69,10 +75,6 @@ public sealed class Plugin : IDalamudPlugin {
 		Framework.Update += Press;
 		ClientState.TerritoryChanged += TerritoryChanged;
 		if (InRace()) isRunning = true;
-		var sheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.ContentFinderCondition>();
-		if (sheet != null)
-			foreach (var row in sheet)
-				if (row.ContentType.RowId == 18) { _chocoboRaceCfcId = row.RowId; break; }
 	}
 
 	private static int PRESS_TIME => Configuration.PressMs * 10000;
@@ -85,10 +87,8 @@ public sealed class Plugin : IDalamudPlugin {
 	[PluginService] internal static IObjectTable ObjectTable { get; set; } = null!;
 	[PluginService] internal static IClientState ClientState { get; private set; } = null!;
 	[PluginService] internal static IGameGui GameGui { get; private set; } = null!;
-	[PluginService] private static IDataManager DataManager { get; set; } = null!;
-	[PluginService] private static IChatGui ChatGui { get; set; } = null!;
+[PluginService] private static IChatGui ChatGui { get; set; } = null!;
 
-	private static uint _chocoboRaceCfcId;
 	private static byte _lastRank;
 
 	public void Dispose() {
@@ -121,10 +121,20 @@ public sealed class Plugin : IDalamudPlugin {
 		var cosTheta = Vector2.Dot(forwardDir, toTargetNormalized);
 		cosTheta = Math.Clamp(cosTheta, -1f, 1f);
 		var angleDeg = (float)(Math.Acos(cosTheta) * 180 / Math.PI);
-		if (distance < (Configuration.MaxLevelMode ? 13 : 8) && angleDeg < 20)
+		var isBadObj = BadObjectType.ContainsKey(target.DataId);
+		// 紅紫陷阱：優先靠左閃避；紅色正前方時跳躍
+		if (target.DataId is 2005039 or 2005040) {
+			if (target.DataId == 2005040 && distance < (Configuration.MaxLevelMode ? 20 : 14) && angleDeg < 25)
+				return Direction.FrontUp;
+			return Direction.Right;
+		}
+		if (!isBadObj && distance < (Configuration.MaxLevelMode ? 20 : 14) && angleDeg < 20)
 			return zDiff > 2 ? Direction.FrontUp : Direction.Front;
-		if (distance < (Configuration.MaxLevelMode ? 20 : 15) && angleDeg < 15 && GoodObjectType.ContainsKey(target.DataId))
+		if (!isBadObj && distance < (Configuration.MaxLevelMode ? 30 : 22) && angleDeg < 15)
 			return Direction.Front;
+		// 好物件：幾乎正前方時不轉向（自然會撿到）
+		if (!isBadObj && angleDeg < 22)
+			return Direction.InValid;
 		return crossProduct > 0 ? Direction.Right : Direction.Left;
 	}
 
@@ -133,6 +143,14 @@ public sealed class Plugin : IDalamudPlugin {
 		return ObjectTable.Where(obj =>
 			Vector3.Distance(ClientState.LocalPlayer.Position, obj.Position) < 75
 			&& obj.ObjectKind == ObjectKind.EventObj
+		).ToArray();
+	}
+
+	internal static IGameObject[] GetNearbyObjects(float range = 50f) {
+		if (ClientState.LocalPlayer is null) return [];
+		return ObjectTable.Where(obj =>
+			obj.ObjectKind != ObjectKind.Player
+			&& Vector3.Distance(ClientState.LocalPlayer.Position, obj.Position) < range
 		).ToArray();
 	}
 
@@ -196,6 +214,8 @@ public sealed class Plugin : IDalamudPlugin {
 		return result;
 	}
 
+	internal static string CanUseItemDebug = "";
+
 	private static unsafe bool CanUseItem() {
 		AtkImageNode* FinalImageNode = null;
 		try {
@@ -210,10 +230,11 @@ public sealed class Plugin : IDalamudPlugin {
 				FinalImageNode = TmpFinalImageNode->GetAsAtkImageNode();
 				break;
 			}
-			if (FinalImageNode == null) return false;
+			if (FinalImageNode == null) { CanUseItemDebug = "(null)"; return false; }
 			var texture = FinalImageNode->PartsList->Parts[FinalImageNode->PartId].UldAsset->AtkTexture;
-			if (texture.TextureType != TextureType.Resource) return false;
-			return texture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString() != "ui/icon/070000/070101_hr1.tex";
+			if (texture.TextureType != TextureType.Resource) { CanUseItemDebug = $"(type={texture.TextureType})"; return false; }
+			CanUseItemDebug = texture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString();
+			return !CanUseItemDebug.Contains("070101");
 		} catch (Exception e) {
 			Log.Warning(e.ToString());
 		}
@@ -243,17 +264,9 @@ public sealed class Plugin : IDalamudPlugin {
 					var textNode = FirstAtkUnitBaseByType(nodeWrapper.Node->GetComponent()->UldManager, (int)NodeType.Text);
 					var text = textNode->GetAsAtkTextNode()->NodeText.ToString();
 					if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
-				} catch { }
+				} catch { continue; }
 				Click(btn, cf);
 				Log.Info("[RequestRace] 點擊 ContentsFinder 参加按鈕");
-				return true;
-			}
-			// 找不到「参加」文字，試點第一個可用按鈕
-			foreach (var nodeWrapper in AllAtkUnitBaseByType(cf, 1001)) {
-				var btn = nodeWrapper.Node->GetAsAtkComponentButton();
-				if (!btn->IsEnabled || !nodeWrapper.Node->IsVisible()) continue;
-				Click(btn, cf);
-				Log.Info("[RequestRace] 點擊 ContentsFinder 第一個可用按鈕");
 				return true;
 			}
 		} catch (Exception ex) {
@@ -264,23 +277,17 @@ public sealed class Plugin : IDalamudPlugin {
 
 	private static unsafe void OpenContentsFinder() {
 		try {
-			var agent = AgentContentsFinder.Instance();
-			if (agent == null) return;
-			if (_chocoboRaceCfcId != 0) agent->OpenRegularDuty(_chocoboRaceCfcId);
-			else AgentModule.Instance()->GetAgentByInternalId(AgentId.ContentsFinder)->Show();
+			AgentModule.Instance()->GetAgentByInternalId(AgentId.ContentsFinder)->Show();
 		} catch (Exception ex) {
 			Log.Warning($"[RequestRace] 開啟義務搜尋器失敗: {ex.Message}");
 		}
 	}
 
 	internal static void RequestRace() {
-		// 若 ContentsFinder 已開啟，直接點參加
 		if (ClickContentsFinderJoin()) return;
-
-		// 否則開啟義務搜尋器，再延遲點擊
+		OpenContentsFinder();
 		Task.Run(async () => {
-			await Framework.RunOnFrameworkThread(OpenContentsFinder);
-			await Task.Delay(1200);
+			await Task.Delay(3000);
 			await Framework.RunOnFrameworkThread(() => ClickContentsFinderJoin());
 		});
 	}
@@ -306,6 +313,13 @@ public sealed class Plugin : IDalamudPlugin {
 	private static unsafe void Press(IFramework framework) {
 		CheckRankUp();
 		if (!Configuration.Enabled || !isRunning) return;
+		// Item — check first for fastest response
+		canUseItem = CanUseItem();
+		if (Configuration.AutoUseItem && canUseItem && DateTime.Now.Ticks - _lastItemUse > 100_000_000L) {
+			SendMessage(mwh, WM_KEYDOWN, Configuration.KC_1, 0);
+			SendMessage(mwh, WM_KEYUP, Configuration.KC_1, 0);
+			_lastItemUse = DateTime.Now.Ticks;
+		}
 		// End
 		try {
 			var ptr = GameGui.GetAddonByName("RaceChocoboResult", 1);
@@ -324,10 +338,8 @@ public sealed class Plugin : IDalamudPlugin {
 			var _RaceChocoboParameterUldManager = _RaceChocoboParameter->UldManager;
 			var _RaceChocoboParameterSpeedNode = _RaceChocoboParameterUldManager.NodeList[_RaceChocoboParameterUldManager.NodeListCount - 1]->GetAsAtkImageNode();
 			var texture = _RaceChocoboParameterSpeedNode->PartsList->Parts[_RaceChocoboParameterSpeedNode->PartId].UldAsset;
-			speedHigh = _RaceChocoboParameterSpeedNode->IsVisible() &&
-			            texture->AtkTexture.TextureType == TextureType.Resource &&
-			            texture->AtkTexture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString() ==
-			            "ui/icon/180000/chs/180043_hr1.tex";
+			if (_RaceChocoboParameterSpeedNode->IsVisible() && texture->AtkTexture.TextureType == TextureType.Resource)
+				speedHigh = texture->AtkTexture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString().Contains("180043");
 			var CounterNode = FirstAtkUnitBaseByType(_RaceChocoboParameter->UldManager, (int)NodeType.Counter)->GetAsAtkCounterNode();
 			HpPercent = float.Parse(CounterNode->NodeText.ToString()[..^1]);
 		} catch (Exception e) {
@@ -349,12 +361,17 @@ public sealed class Plugin : IDalamudPlugin {
 		} catch (Exception e) {
 			Log.Warning(e.ToString());
 		}
-		if (Configuration.MaxLevelMode && DateTime.Now.Ticks - LastPress2 > 75000000) {
-			LastPress2 = DateTime.Now.Ticks;
+		// 用靜止物件計算速度
+		var nowTicks = DateTime.Now.Ticks;
+		// 技能2：體力充足(>70%)或進度>75%時使用，最短冷卻20秒
+		var skill2Cooldown = nowTicks - LastPress2 > 200_000_000L;
+		var useSkill2 = skill2Cooldown && (HpPercent > 70 || RacePercent > 75) && RacePercent > 5;
+		if (useSkill2) {
+			LastPress2 = nowTicks;
 			TryPress(Configuration.KC_2);
 		}
 		L = Configuration.DisableSpeedUpWhenLowHP && HpPercent < RacePercent;
-		H = Configuration.EnableSpeedUpWhenHighHP && HpPercent > RacePercent && RacePercent < 25;
+		H = Configuration.EnableSpeedUpWhenHighHP && HpPercent - RacePercent >= 5;
 		var notSpeedHigh = !speedHigh || _random.NextDouble() * 100 < Configuration.SpeedHighW && !L || H;
 		foreach (var code in PressTime.Select(p => new {
 				         p,
@@ -371,15 +388,16 @@ public sealed class Plugin : IDalamudPlugin {
 			Log.Info($"WM_KEYUP: {code}");
 		}
 		if (notSpeedHigh) TryPress(Configuration.KC_W);
-		var maxDist = 114514f;
-		IGameObject? target = null;
+		IGameObject? badTarget = null, goodTarget = null;
+		var badDist = float.MaxValue;
+		var goodDist = float.MaxValue;
 		foreach (var obj in ObjectTable) {
-			if (obj.ObjectKind != ObjectKind.EventObj) continue;
-			var newdis = Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position);
-			if (!(newdis < maxDist)) continue;
-			target = obj;
-			maxDist = newdis;
+			if (obj.ObjectKind != ObjectKind.EventObj && obj.ObjectKind != ObjectKind.BattleNpc) continue;
+			var d = Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position);
+			if (BadObjectType.ContainsKey(obj.DataId) && d < badDist) { badTarget = obj; badDist = d; }
+			else if (GoodObjectType.ContainsKey(obj.DataId) && d < goodDist) { goodTarget = obj; goodDist = d; }
 		}
+		var target = badTarget ?? goodTarget;
 		if (target == null) return;
 		var isBad = BadObjectType.ContainsKey(target.DataId);
 		switch (GetTargetSide(target)) {
@@ -395,28 +413,42 @@ public sealed class Plugin : IDalamudPlugin {
 				TryPress(Configuration.KC_SPACE);
 				break;
 			case Direction.Front:
-				if (isBad) TryPress(Configuration.KC_SPACE);
 				break;
 			case Direction.InValid:
 			default:
 				break;
 		}
-		canUseItem = CanUseItem();
-		if (Configuration.AutoUseItem && canUseItem) TryPress(Configuration.KC_1);
 	}
 
 	private static bool InRace() => ClientState.TerritoryType is 389 or 390 or 391;
 
+	private static unsafe (short exp, short max) GetCurrentExp() {
+		var mgr = RaceChocoboManager.Instance();
+		return (mgr->ExperienceCurrent, mgr->ExperienceMax);
+	}
+
 	private static void TerritoryChanged(ushort u) {
-		if (InRace())
+		if (InRace()) {
+			(_expOnRaceEnter, _expMaxOnRaceEnter) = GetCurrentExp();
 			Task.Run(async () => {
 				await Task.Delay(Configuration.AutoDutyWait * 1000);
 				isRunning = true;
 			});
-		else if (isRunning) {
-			isRunning = false;
-			foreach (var code in PressTime.Keys)
-				SendMessage(mwh, WM_KEYUP, code, 0);
+		} else {
+			if (isRunning) {
+				isRunning = false;
+				foreach (var code in PressTime.Keys)
+					SendMessage(mwh, WM_KEYUP, code, 0);
+			}
+			if (_expOnRaceEnter > 0 || _expMaxOnRaceEnter > 0) {
+				var (expAfter, maxAfter) = GetCurrentExp();
+				if (maxAfter == _expMaxOnRaceEnter)
+					LastRaceExpGain = expAfter >= _expOnRaceEnter ? expAfter - _expOnRaceEnter : 0;
+				else
+					LastRaceExpGain = _expMaxOnRaceEnter - _expOnRaceEnter + expAfter;
+				_expOnRaceEnter = 0;
+				_expMaxOnRaceEnter = 0;
+			}
 		}
 		if (Configuration.AutoDuty && Configuration.AutoDutyTerritory.Split('|').Contains(ClientState.TerritoryType.ToString())) {
 			Task.Run(async () => {

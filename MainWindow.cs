@@ -22,9 +22,10 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 		red = new(1, 0, 0, 1);
 
 	private static string AbilityName(byte id) => id switch {
-		0x2E => "經驗值提高III",
-		0x1D => "體力消耗降低II",
 		0x00 => "無",
+		0x15 => "陸行鳥偷取III",
+		0x1D => "體力消耗降低II",
+		0x2E => "經驗值提高III",
 		_ => $"未知(0x{id:X2})"
 	};
 
@@ -74,9 +75,9 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				if (ImGui.InputText("循環區域(用豎線|分隔)", ref Configuration.AutoDutyTerritory, 256)) Configuration.Save();
 				if (ImGui.InputInt("循環間延遲(s)", ref Configuration.AutoDutyWait)) Configuration.Save();
 				var mgr = RaceChocoboManager.Instance();
-				ImGui.Text($"當前區域: {ClientState.TerritoryType}, 競賽等級: {mgr->Rank}, 經驗: {mgr->ExperienceCurrent}/{mgr->ExperienceMax}");
+				ImGui.Text($"當前區域: {ClientState.TerritoryType}, 競賽等級: {mgr->Rank}, 經驗: {mgr->ExperienceCurrent}/{mgr->ExperienceMax}, 上場獲得: {LastRaceExpGain}");
 				ImGui.Text($"可訓練次數: {mgr->SessionsAvailable}");
-				ImGui.Text($"最高速度:{mgr->MaximumSpeed}% 加速力:{mgr->Acceleration}% 體力:{mgr->Endurance}% 持久力:{mgr->Stamina}% 適應力:{mgr->Cunning}%");
+				ImGui.TextUnformatted($"最高速度:{mgr->MaximumSpeed}% 加速力:{mgr->Acceleration}% 體力:{mgr->Endurance}% 持久力:{mgr->Stamina}% 適應力:{mgr->Cunning}%");
 				ImGui.Text($"先天性:{AbilityName(mgr->AbilityHereditary)}  後天性:{AbilityName(mgr->AbilityLearned)}");
 				if (ImGui.InputInt("按鍵時長(ms)", ref Configuration.PressMs)) Configuration.Save();
 				if (ImGui.InputFloat("超速也加速機率", ref Configuration.SpeedHighW, 1)) Configuration.Save();
@@ -86,6 +87,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				if (ImGui.Checkbox("滿級模式", ref Configuration.MaxLevelMode)) Configuration.Save();
 				ImGui.Separator();
 				ImGui.Text($"可使用物品：{(canUseItem ? "是" : "否")}。超速：{(speedHigh ? "是" : "否")}。L:{L}。H:{H}");
+				ImGui.TextDisabled($"道具材質：{CanUseItemDebug}");
 				ImGui.Text($"體力：{HpPercent}/剩餘路程：{RacePercent}");
 				List<string[]> data = [];
 				foreach (var obj in GetEventObjects()) {
@@ -237,6 +239,27 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 					Configuration.KC_2 = KC_2;
 					Configuration.Save();
 				}
+			});
+			NewTab("物件", () => {
+				ImGui.TextDisabled("顯示附近所有物件，用於識別障礙怪物 DataId");
+				List<string[]> data = [];
+				foreach (var obj in GetNearbyObjects()) {
+					var dist = (int)System.Numerics.Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position);
+					var tag = "";
+					if (GoodObjectType.TryGetValue(obj.DataId, out var g)) tag = g;
+					else if (BadObjectType.TryGetValue(obj.DataId, out var b)) tag = b;
+					data.Add([
+						obj.ObjectKind.ToString(),
+						obj.DataId.ToString(),
+						dist.ToString(),
+						obj.Position.X.ToString("F1"),
+						obj.Position.Y.ToString("F1"),
+						obj.Position.Z.ToString("F1"),
+						tag,
+						obj.Name.ToString()
+					]);
+				}
+				NewTable(["種類", "DataId", "距", "X", "Y", "Z", "標記", "名稱"], data);
 			});
 			ImGui.EndTabBar();
 		}
