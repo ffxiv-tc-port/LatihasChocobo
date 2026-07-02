@@ -21,11 +21,233 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 	private static readonly Vector4 green = new(0, 1, 0, 1),
 		red = new(1, 0, 0, 1);
 
+	private static ushort _mapTerritory = 389;
+
+	private static void DrawRouteMap(ushort territory) {
+		var data = TrackMemory.GetData(territory);
+		var canvasSize = new Vector2(ImGui.GetContentRegionAvail().X, 340);
+		var canvasPos = ImGui.GetCursorScreenPos();
+		var dl = ImGui.GetWindowDrawList();
+		dl.AddRectFilled(canvasPos, canvasPos + canvasSize, ImGui.ColorConvertFloat4ToU32(new Vector4(0.07f, 0.07f, 0.07f, 1f)));
+		dl.AddRect(canvasPos, canvasPos + canvasSize, ImGui.ColorConvertFloat4ToU32(new Vector4(0.35f, 0.35f, 0.35f, 1f)));
+		ImGui.Dummy(canvasSize);
+
+		if (data == null || (data.Waypoints.Count == 0 && data.Objects.Count == 0)) {
+			dl.AddText(canvasPos + new Vector2(10, 10), ImGui.ColorConvertFloat4ToU32(new Vector4(0.5f, 0.5f, 0.5f, 1f)), "無資料");
+			return;
+		}
+
+		var player = ClientState.LocalPlayer;
+		var allPts = data.Waypoints.Select(w => (w.X, w.Z))
+			.Concat(data.Objects.Select(o => (o.X, o.Z)));
+		if (player != null && ClientState.TerritoryType == territory)
+			allPts = allPts.Append((player.Position.X, player.Position.Z));
+		var ptList = allPts.ToList();
+		var minX = ptList.Min(p => p.X); var maxX = ptList.Max(p => p.X);
+		var minZ = ptList.Min(p => p.Z); var maxZ = ptList.Max(p => p.Z);
+
+		const float pad = 16f;
+		// 地圖旋轉 90° 逆時針：Z 軸反轉 → 水平（canvasX），X 軸 → 垂直（canvasY）
+		var rangeH = Math.Max(maxZ - minZ, 1f);
+		var rangeV = Math.Max(maxX - minX, 1f);
+		var scale = Math.Min((canvasSize.X - pad * 2) / rangeH, (canvasSize.Y - pad * 2) / rangeV);
+		var offX = canvasPos.X + (canvasSize.X - rangeH * scale) / 2f;
+		var offY = canvasPos.Y + (canvasSize.Y - rangeV * scale) / 2f;
+		// world (wx, wz) → canvas: maxZ-Z→X，X→Y
+		Vector2 W2C(float wx, float wz) => new(offX + (maxZ - wz) * scale, offY + (wx - minX) * scale);
+
+		// ── 賽道路線：使用 TrackMemory 有序路徑快取 ──
+		var confirmedWps = data.Waypoints.Where(w => w.SeenCount >= TrackMemory.ConfirmCount).ToList();
+		var orderedPath = TrackMemory.GetOrderedPath(territory);
+		if (orderedPath.Count >= 2) {
+			var pathCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0.3f, 0.6f, 1f, 0.55f));
+			var halfTrack = Math.Max(2f, 4f * scale); // ~賽道半寬對應像素
+			// 畫賽道帶狀色塊（每段路點間填充四邊形）
+			var bandCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0.2f, 0.4f, 0.7f, 0.18f));
+			for (var i = 0; i < orderedPath.Count - 1; i++) {
+				var a = orderedPath[i]; var b = orderedPath[i + 1];
+				var pa = W2C(a.X, a.Z); var pb = W2C(b.X, b.Z);
+				// 賽道寬度方向（右垂直 world(cos,−sin) → canvas(sin,cos) after 90°CCW）
+				var perpA = new Vector2(MathF.Sin(a.Rotation), MathF.Cos(a.Rotation)) * halfTrack;
+				var perpB = new Vector2(MathF.Sin(b.Rotation), MathF.Cos(b.Rotation)) * halfTrack;
+				dl.AddQuadFilled(pa - perpA, pa + perpA, pb + perpB, pb - perpB, bandCol);
+				dl.AddLine(pa, pb, pathCol, 1.5f);
+			}
+		}
+
+		// ── 邊界線 ──
+		var leftBoundary = TrackMemory.GetBoundaryPath(territory, true);
+		var rightBoundary = TrackMemory.GetBoundaryPath(territory, false);
+		var leftCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0.2f, 0.9f, 0.9f, 0.7f));
+		var rightCol = ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 0.5f, 0.1f, 0.7f));
+		for (var i = 0; i < leftBoundary.Count - 1; i++)
+			dl.AddLine(W2C(leftBoundary[i].X, leftBoundary[i].Z), W2C(leftBoundary[i+1].X, leftBoundary[i+1].Z), leftCol, 1.5f);
+		for (var i = 0; i < rightBoundary.Count - 1; i++)
+			dl.AddLine(W2C(rightBoundary[i].X, rightBoundary[i].Z), W2C(rightBoundary[i+1].X, rightBoundary[i+1].Z), rightCol, 1.5f);
+
+		// ── 未確認路點（暗色小點）──
+		foreach (var w in data.Waypoints.Where(w => w.SeenCount < TrackMemory.ConfirmCount)) {
+			dl.AddCircleFilled(W2C(w.X, w.Z), 1.5f, ImGui.ColorConvertFloat4ToU32(new Vector4(0.3f, 0.3f, 0.3f, 0.5f)));
+		}
+		// ── 確認路點（綠點）──
+		foreach (var w in confirmedWps) {
+			dl.AddCircleFilled(W2C(w.X, w.Z), 2.5f, ImGui.ColorConvertFloat4ToU32(new Vector4(0.2f, 0.85f, 0.2f, 0.9f)));
+		}
+
+		// ── 物件（含確認外圈）──
+		// 目前賽道上實際偵測到的物件集合，用於判斷是否需要降亮
+		var liveSet = ClientState.TerritoryType == territory
+			? ObjectTable
+				.Where(obj => (obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj
+				            || obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
+				           && (BadObjectType.ContainsKey(obj.DataId) || GoodObjectType.ContainsKey(obj.DataId)))
+				.Select(obj => (obj.DataId, obj.Position))
+				.ToList()
+			: [];
+		foreach (var o in data.Objects) {
+			var p = W2C(o.X, o.Z);
+			var isLive = liveSet.Any(l => l.DataId == o.DataId && Vector3.Distance(l.Position, o.Position) < 8f);
+			var alpha = isLive ? 1f : 0.3f;
+			Vector4 col4 = BadObjectType.ContainsKey(o.DataId)
+				? new Vector4(1f, 0.25f, 0.25f, alpha)
+				: GoodObjectType.ContainsKey(o.DataId)
+					? new Vector4(1f, 0.9f, 0.1f, alpha)
+					: new Vector4(0.6f, 0.6f, 0.6f, alpha);
+			var col = ImGui.ColorConvertFloat4ToU32(col4);
+			dl.AddCircleFilled(p, 4.5f, col);
+			if (o.SeenCount >= TrackMemory.ConfirmCount) dl.AddCircle(p, 7f, col, 12, 1.5f);
+		}
+
+		// ── 玩家（白點＋黃色方向箭頭）──
+		if (player != null && ClientState.TerritoryType == territory) {
+			var pp = W2C(player.Position.X, player.Position.Z);
+			dl.AddCircleFilled(pp, 5f, ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 1f, 1f)));
+			var rot = player.Rotation;
+			// world forward (sin,cos) → canvas (−cos,sin) after 90°CCW
+			var tip = pp + new Vector2(-MathF.Cos(rot), MathF.Sin(rot)) * 14f;
+			dl.AddLine(pp, tip, ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 0.1f, 1f)), 2.5f);
+		}
+
+		// ── 敵人（紫色，僅當前賽道）──
+		if (ClientState.TerritoryType == territory) {
+			var enemyCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0.75f, 0.3f, 1f, 1f));
+			foreach (var obj in ObjectTable) {
+				if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc || obj.DataId != 3705) continue;
+				var ep = W2C(obj.Position.X, obj.Position.Z);
+				dl.AddCircleFilled(ep, 4f, enemyCol);
+				var eRot = obj.Rotation;
+				var eTip = ep + new Vector2(-MathF.Cos(eRot), MathF.Sin(eRot)) * 10f;
+				dl.AddLine(ep, eTip, enemyCol, 1.5f);
+			}
+		}
+	}
+
+
+	private static void DrawElevationProfile(ushort territory) {
+		var path = TrackMemory.GetOrderedPath(territory);
+		if (path.Count < 2) return;
+		var data = TrackMemory.GetData(territory);
+
+		const float h = 70f;
+		var canvasSize = new Vector2(ImGui.GetContentRegionAvail().X, h);
+		var canvasPos = ImGui.GetCursorScreenPos();
+		var dl = ImGui.GetWindowDrawList();
+		dl.AddRectFilled(canvasPos, canvasPos + canvasSize, ImGui.ColorConvertFloat4ToU32(new Vector4(0.05f, 0.05f, 0.05f, 1f)));
+		dl.AddRect(canvasPos, canvasPos + canvasSize, ImGui.ColorConvertFloat4ToU32(new Vector4(0.25f, 0.25f, 0.25f, 1f)));
+		ImGui.Dummy(canvasSize);
+
+		var minY = path.Min(w => w.Y);
+		var maxY = path.Max(w => w.Y);
+		var rangeY = Math.Max(maxY - minY, 1f);
+
+		var dists = new float[path.Count];
+		dists[0] = 0f;
+		for (var i = 1; i < path.Count; i++)
+			dists[i] = dists[i - 1] + Vector3.Distance(path[i - 1].Position, path[i].Position);
+		var totalDist = dists[^1];
+		if (totalDist < 1f) return;
+
+		const float pad = 4f;
+		float PX(float d) => canvasPos.X + pad + (d / totalDist) * (canvasSize.X - pad * 2);
+		float PY(float y) => canvasPos.Y + h - pad - ((y - minY) / rangeY) * (h - pad * 2);
+
+		var lineCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0.4f, 0.8f, 0.4f, 0.9f));
+		for (var i = 0; i < path.Count - 1; i++)
+			dl.AddLine(new Vector2(PX(dists[i]), PY(path[i].Y)), new Vector2(PX(dists[i + 1]), PY(path[i + 1].Y)), lineCol, 1.5f);
+
+		if (data != null) {
+			foreach (var o in data.Objects.Where(o => o.SeenCount >= TrackMemory.ConfirmCount && BadObjectType.ContainsKey(o.DataId))) {
+				var nearestDist = dists[0];
+			var minD = float.MaxValue;
+				for (var i = 0; i < path.Count; i++) {
+					var d = Vector2.Distance(new Vector2(o.X, o.Z), new Vector2(path[i].X, path[i].Z));
+					if (d < minD) { minD = d; nearestDist = dists[i]; }
+				}
+				var trapCol = ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 0.3f, 0.3f, 0.9f));
+				var tx = PX(nearestDist);
+				dl.AddLine(new Vector2(tx, canvasPos.Y + pad), new Vector2(tx, canvasPos.Y + h - pad), trapCol, 1f);
+				dl.AddCircleFilled(new Vector2(tx, PY(o.Y)), 3f, trapCol);
+			}
+		}
+
+		var player = ClientState.LocalPlayer;
+		if (player != null && ClientState.TerritoryType == territory) {
+			var pp2 = new Vector2(player.Position.X, player.Position.Z);
+			var nearIdx = 0; var nearD2 = float.MaxValue;
+			for (var i = 0; i < path.Count; i++) {
+				var d = Vector2.Distance(pp2, new Vector2(path[i].X, path[i].Z));
+				if (d < nearD2) { nearD2 = d; nearIdx = i; }
+			}
+			var px = PX(dists[nearIdx]);
+			dl.AddLine(new Vector2(px, canvasPos.Y + pad), new Vector2(px, canvasPos.Y + h - pad),
+				ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 0.2f, 0.8f)), 1.5f);
+			dl.AddCircleFilled(new Vector2(px, PY(player.Position.Y)), 4f,
+				ImGui.ColorConvertFloat4ToU32(new Vector4(1f, 1f, 1f, 1f)));
+		}
+	}
+
 	private static string AbilityName(byte id) => id switch {
 		0x00 => "無",
+		0x01 => "衝刺",
+		0x02 => "衝刺II",
+		0x04 => "療傷",
+		0x05 => "療傷II",
+		0x07 => "復原",
+		0x08 => "復原II",
+		0x0A => "活力",
+		0x0B => "活力II",
+		0x0D => "鎮靜",
+		0x0E => "鎮靜II",
+		0x10 => "反射",
+		0x11 => "反射II",
+		0x13 => "陸行鳥偷取I",
+		0x14 => "陸行鳥偷取II",
 		0x15 => "陸行鳥偷取III",
+		0x16 => "沉默",
+		0x17 => "沉默II",
+		0x19 => "震盪",
+		0x1A => "震盪II",
+		0x1C => "體力消耗降低",
 		0x1D => "體力消耗降低II",
+		0x1F => "加重耐性",
+		0x20 => "加重耐性II",
+		0x21 => "加重耐性III",
+		0x22 => "加重耐性IV",
+		0x24 => "失控耐性",
+		0x25 => "失控耐性II",
+		0x26 => "失控耐性III",
+		0x27 => "失控耐性IV",
+		0x29 => "體力恢復量提高",
+		0x2A => "體力恢復量提高II",
+		0x2C => "經驗值提高I",
+		0x2D => "經驗值提高II",
 		0x2E => "經驗值提高III",
+		0x30 => "陸行鳥吸收",
+		0x34 => "模仿",
+		0x37 => "鳥羽結界",
+		0x3B => "陸行鳥復生",
+		0x3E => "弱化耐性",
+		0x41 => "減速休息",
 		_ => $"未知(0x{id:X2})"
 	};
 
@@ -88,7 +310,13 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				ImGui.Separator();
 				ImGui.Text($"可使用物品：{(canUseItem ? "是" : "否")}。超速：{(speedHigh ? "是" : "否")}。L:{L}。H:{H}");
 				ImGui.TextDisabled($"道具材質：{CanUseItemDebug}");
-				ImGui.Text($"體力：{HpPercent}/剩餘路程：{RacePercent}");
+				var (tPct, remU, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, ClientState.LocalPlayer!.Position);
+				var progressStr = totU > 0
+					? $"路程：{tPct:F1}% 剩餘 {remU:F0}/{totU:F0}u"
+					: $"路程(UI)：{RacePercent}%";
+				ImGui.Text($"體力：{HpPercent} / {progressStr} / 速度：{CurrentSpeed:F1} u/s");
+			var jumpLead = CurrentSpeed > 1f ? CurrentSpeed * Configuration.JumpPeakTime : Configuration.JumpPeakTime;
+			ImGui.TextDisabled($"跳躍：峰值時間 {Configuration.JumpPeakTime:F2}s  峰值高度 {Configuration.JumpPeakHeight:F2}u  預判距離 {jumpLead:F1}u");
 				List<string[]> data = [];
 				foreach (var obj in GetEventObjects()) {
 					var name = "UNK";
@@ -238,6 +466,113 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				if (ImGui.InputInt("KC_2(技能2)", ref KC_2)) {
 					Configuration.KC_2 = KC_2;
 					Configuration.Save();
+				}
+			});
+			NewTab("賽道", () => {
+				ImGui.TextDisabled($"記錄好/壞物件位置與路點，{TrackMemory.ConfirmCount}場後視為確認，用於精準閃避時機與彎道預轉向");
+				if (TrackMemory.SavePath != null) {
+					ImGui.TextDisabled(TrackMemory.SavePath);
+					ImGui.SameLine();
+					if (ImGui.SmallButton("開啟資料夾"))
+						System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{TrackMemory.SavePath}\"");
+					ImGui.SameLine();
+					if (ImGui.SmallButton("複製路徑"))
+						ImGui.SetClipboardText(TrackMemory.SavePath);
+				}
+				ImGui.Separator();
+				// 邊界模式控制
+				if (!Configuration.BoundaryMode) {
+					if (ImGui.Button("開始邊界校正（自動跑2場）")) {
+						Configuration.BoundaryMode = true;
+						Configuration.BoundaryPhase = 1;
+						Configuration.Save();
+					}
+				} else {
+					var phaseStr = Configuration.BoundaryPhase == 1 ? "第1場：靠左側行駛中..." : "第2場：靠右側行駛中...";
+					ImGui.TextColored(new Vector4(1f, 0.8f, 0.1f, 1f), $"[邊界模式] {phaseStr}");
+					ImGui.SameLine();
+					if (ImGui.SmallButton("取消")) {
+						Configuration.BoundaryMode = false;
+						Configuration.BoundaryPhase = 0;
+						Configuration.Save();
+					}
+				}
+				ImGui.Separator();
+				// 進入賽道時自動切換，否則預設 390
+				var cur = ClientState.TerritoryType;
+				if (cur is 389 or 390 or 391) _mapTerritory = cur;
+				else if (_mapTerritory == 0) _mapTerritory = 390;
+				// 路線圖（在物件資料上方）
+				var territories = new ushort[] { 389, 390, 391 };
+				foreach (var t in territories) {
+					if (t != territories[0]) ImGui.SameLine();
+					if (ImGui.RadioButton(t.ToString(), _mapTerritory == t)) _mapTerritory = t;
+				}
+				DrawRouteMap(_mapTerritory);
+				DrawElevationProfile(_mapTerritory);
+				// 圖例
+				var dl2 = ImGui.GetWindowDrawList();
+				var dot = ImGui.ColorConvertFloat4ToU32;
+				{
+					var lp = ImGui.GetCursorScreenPos();
+					dl2.AddLine(lp + new Vector2(2, 8), lp + new Vector2(12, 8), dot(new Vector4(0.3f, 0.6f, 1f, 0.7f)), 2);
+					ImGui.SetCursorScreenPos(lp + new Vector2(16, 0)); ImGui.TextDisabled("路線");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddCircleFilled(lp + new Vector2(6, 8), 3, dot(new Vector4(0.2f, 0.8f, 0.2f, 1)));
+					ImGui.SetCursorScreenPos(lp + new Vector2(14, 0)); ImGui.TextDisabled("確認路點");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddCircleFilled(lp + new Vector2(6, 8), 2, dot(new Vector4(0.35f, 0.35f, 0.35f, 1)));
+					ImGui.SetCursorScreenPos(lp + new Vector2(14, 0)); ImGui.TextDisabled("未確認");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddCircleFilled(lp + new Vector2(6, 8), 4, dot(new Vector4(1f, 0.25f, 0.25f, 1)));
+					ImGui.SetCursorScreenPos(lp + new Vector2(14, 0)); ImGui.TextDisabled("危險");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddCircleFilled(lp + new Vector2(6, 8), 4, dot(new Vector4(1f, 0.9f, 0.1f, 1)));
+					ImGui.SetCursorScreenPos(lp + new Vector2(14, 0)); ImGui.TextDisabled("好物件");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddCircleFilled(lp + new Vector2(6, 8), 4, dot(new Vector4(1f, 1f, 1f, 1)));
+					ImGui.SetCursorScreenPos(lp + new Vector2(14, 0)); ImGui.TextDisabled("玩家");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddLine(lp + new Vector2(2, 8), lp + new Vector2(12, 8), dot(new Vector4(0.2f, 0.9f, 0.9f, 0.8f)), 2);
+					ImGui.SetCursorScreenPos(lp + new Vector2(16, 0)); ImGui.TextDisabled("左邊界");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddLine(lp + new Vector2(2, 8), lp + new Vector2(12, 8), dot(new Vector4(1f, 0.5f, 0.1f, 0.8f)), 2);
+					ImGui.SetCursorScreenPos(lp + new Vector2(16, 0)); ImGui.TextDisabled("右邊界");
+					ImGui.SameLine();
+					lp = ImGui.GetCursorScreenPos();
+					dl2.AddCircleFilled(lp + new Vector2(6, 8), 4, dot(new Vector4(0.75f, 0.3f, 1f, 1f)));
+					ImGui.SetCursorScreenPos(lp + new Vector2(14, 0)); ImGui.TextDisabled("敵人");
+					ImGui.NewLine();
+				}
+				ImGui.Separator();
+				// 各賽道物件資料
+				foreach (var t in territories) {
+					var data = TrackMemory.GetData(t);
+					if (data == null) { ImGui.TextDisabled($"地圖 {t}：無資料"); continue; }
+					var confirmedObjs = data.Objects.Count(o => o.SeenCount >= TrackMemory.ConfirmCount);
+					var confirmedWps = data.Waypoints.Count(w => w.SeenCount >= TrackMemory.ConfirmCount);
+					var path = TrackMemory.GetOrderedPath(t);
+					var pathLen = 0f;
+					for (var i = 0; i < path.Count - 1; i++)
+						pathLen += Vector2.Distance(new Vector2(path[i].X, path[i].Z), new Vector2(path[i+1].X, path[i+1].Z));
+					ImGui.Text($"地圖 {t}：物件 {data.Objects.Count}({confirmedObjs}確認)  路點 {data.Waypoints.Count}({confirmedWps}確認)  路徑 {path.Count}點/{pathLen:F0}u");
+					ImGui.SameLine();
+					if (ImGui.SmallButton($"清除##{t}")) TrackMemory.Clear(t);
+					List<string[]> objData = [];
+					foreach (var o in data.Objects) {
+						var name = "";
+						if (BadObjectType.TryGetValue(o.DataId, out var b)) name = b;
+						else if (GoodObjectType.TryGetValue(o.DataId, out var g)) name = g;
+						objData.Add([o.DataId.ToString(), name, o.SeenCount.ToString(), o.SeenCount >= TrackMemory.ConfirmCount ? "✓" : ""]);
+					}
+					if (objData.Count > 0) NewTable(["DataId", "名稱", "次數", "確認"], objData);
 				}
 			});
 			NewTab("物件", () => {
