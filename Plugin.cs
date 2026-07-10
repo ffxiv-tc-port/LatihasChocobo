@@ -207,7 +207,6 @@ public sealed class Plugin : IDalamudPlugin {
 		PressTime[code] = DateTime.Now.Ticks;
 		if (!(percent > 100) && !(_random.NextDouble() * 100 < percent)) return;
 		SendMessage(mwh, WM_KEYDOWN, code, 0);
-		Log.Info($"WM_KEYDOWN: {code}");
 	}
 
 	// internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUnitBase* root, int type) => FirstAtkUnitBaseByType(root->UldManager, type);
@@ -370,7 +369,6 @@ public sealed class Plugin : IDalamudPlugin {
 			// 用 PressTime 機制持按 PRESS_TIME ms 後才放開，避免 0ms 按鍵被遊戲忽略
 			PressTime[Configuration.KC_1] = DateTime.Now.Ticks;
 			SendMessage(mwh, WM_KEYDOWN, Configuration.KC_1, 0);
-			Log.Info($"[Item] WM_KEYDOWN: {Configuration.KC_1}");
 		}
 		// End
 		try {
@@ -440,7 +438,6 @@ public sealed class Plugin : IDalamudPlugin {
 			         .Select(t => t.t.code)) {
 			if (notSpeedHigh && code == Configuration.KC_W) continue;
 			SendMessage(mwh, WM_KEYUP, code, 0);
-			Log.Info($"WM_KEYUP: {code}");
 		}
 		if (notSpeedHigh) TryPress(Configuration.KC_W);
 		var player = ClientState.LocalPlayer!;
