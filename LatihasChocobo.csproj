@@ -19,7 +19,14 @@
     <Name>LatihasChocobo</Name>
     <Description>自動陸行鳥競賽</Description>
     <Punchline>自動陸行鳥競賽</Punchline>
+    <IconUrl>https://raw.githubusercontent.com/Lother/DalamudPluginsTC/main/icons/LatihasChocobo.png</IconUrl>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="Resources\icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 
   <Target Name="PersistBuildNumber" AfterTargets="Build">
     <WriteLinesToFile File="$(BuildNumberFile)" Lines="$(BuildNumber)" Overwrite="true" />
