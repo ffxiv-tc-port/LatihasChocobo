@@ -312,7 +312,7 @@ public sealed class Plugin : IDalamudPlugin {
 					if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
 				} catch { continue; }
 				Click(btn, cf);
-				Log.Info("[RequestRace] 點擊 ContentsFinder 参加按鈕");
+				Log.Info("[RequestRace] 點擊 ContentsFinder 參加按鈕");
 				return true;
 			}
 		} catch (Exception ex) {
@@ -485,7 +485,7 @@ public sealed class Plugin : IDalamudPlugin {
 			var d = Vector3.Distance(player.Position, obj.Position);
 			if (BadObjectType.ContainsKey(obj.DataId)) {
 				TrackMemory.RecordObject(obj.DataId, obj.Position);
-				// 只有實際會產生有效閃避方向的壞物件才搶占優先權
+				// 只有實際會產生有效閃避方向的壞物件才搶佔優先權
 				if (d < badDist && GetTargetSide(obj) != Direction.InValid) { badTarget = obj; badDist = d; }
 			} else if (GoodObjectType.ContainsKey(obj.DataId)) {
 				TrackMemory.RecordObject(obj.DataId, obj.Position);
