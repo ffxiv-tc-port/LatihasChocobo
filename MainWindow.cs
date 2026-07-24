@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Numerics;
-using ImGuiNET;
+using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -344,7 +344,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				string? ability = null;
 				string? breedCount = null;
 				try {
-					var ItemDetail = (AtkUnitBase*)GameGui.GetAddonByName("ItemDetail", 1);
+					var ItemDetail = (AtkUnitBase*)GameGui.GetAddonByName("ItemDetail", 1).Address;
 					if (ItemDetail->IsVisible) {
 						foreach (var TextNode in AllAtkUnitBaseByType(ItemDetail, (int)NodeType.Text)) {
 							var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();

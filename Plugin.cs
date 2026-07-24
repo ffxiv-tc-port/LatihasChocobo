@@ -265,7 +265,7 @@ public sealed class Plugin : IDalamudPlugin {
 	private static unsafe bool CanUseItem() {
 		AtkImageNode* FinalImageNode = null;
 		try {
-			var _ActionBar = (AtkUnitBase*)GameGui.GetAddonByName("_ActionBar", 1);
+			var _ActionBar = (AtkUnitBase*)GameGui.GetAddonByName("_ActionBar", 1).Address;
 			foreach (var BaseComponentNodew in AllAtkUnitBaseByType(_ActionBar, 1005)) {
 				var BaseComponentNode = BaseComponentNodew.Node;
 				var TextNode = FirstAtkUnitBaseByType(BaseComponentNode->GetComponent()->UldManager, (int)NodeType.Text);
@@ -298,7 +298,7 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	private static unsafe bool ClickContentsFinderJoin() {
-		var cfPtr = GameGui.GetAddonByName("ContentsFinder", 1);
+		var cfPtr = GameGui.GetAddonByName("ContentsFinder", 1).Address;
 		if (cfPtr == nint.Zero) return false;
 		var cf = (AtkUnitBase*)cfPtr;
 		if (!cf->IsVisible) return false;
@@ -372,7 +372,7 @@ public sealed class Plugin : IDalamudPlugin {
 		}
 		// End
 		try {
-			var ptr = GameGui.GetAddonByName("RaceChocoboResult", 1);
+			var ptr = GameGui.GetAddonByName("RaceChocoboResult", 1).Address;
 			if (ptr != IntPtr.Zero) {
 				var RaceChocoboResult = (AtkUnitBase*)ptr;
 				var ButtonComponentNode = FirstAtkUnitBaseByType(RaceChocoboResult->UldManager, 1001)->GetAsAtkComponentButton();
@@ -384,7 +384,7 @@ public sealed class Plugin : IDalamudPlugin {
 		// Race
 		speedHigh = false;
 		try {
-			var _RaceChocoboParameter = (AtkUnitBase*)GameGui.GetAddonByName("_RaceChocoboParameter", 1);
+			var _RaceChocoboParameter = (AtkUnitBase*)GameGui.GetAddonByName("_RaceChocoboParameter", 1).Address;
 			var _RaceChocoboParameterUldManager = _RaceChocoboParameter->UldManager;
 			var _RaceChocoboParameterSpeedNode = _RaceChocoboParameterUldManager.NodeList[_RaceChocoboParameterUldManager.NodeListCount - 1]->GetAsAtkImageNode();
 			var texture = _RaceChocoboParameterSpeedNode->PartsList->Parts[_RaceChocoboParameterSpeedNode->PartId].UldAsset;
@@ -397,7 +397,7 @@ public sealed class Plugin : IDalamudPlugin {
 		}
 		try {
 			var found = false;
-			var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList", 1);
+			var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList", 1).Address;
 			foreach (var BaseComponentNode in AllAtkUnitBaseByType(_ToDoList, 1008)) {
 				foreach (var NodeText in AllAtkUnitBaseByType(BaseComponentNode.Node->GetComponent()->UldManager, (int)NodeType.Text)) {
 					var str = NodeText.Node->GetAsAtkTextNode()->NodeText.ToString();
