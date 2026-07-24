@@ -1,9 +1,6 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <OutputPath>bin</OutputPath>
-    <TargetFramework>net9.0-windows</TargetFramework>
-    <LangVersion>13.0</LangVersion>
-    <DalamudApiLevel>12</DalamudApiLevel>
   </PropertyGroup>
   <PropertyGroup>
     <BuildNumberFile>$(MSBuildProjectDirectory)\BuildNumber.txt</BuildNumberFile>
@@ -31,34 +28,4 @@
   <Target Name="PersistBuildNumber" AfterTargets="Build">
     <WriteLinesToFile File="$(BuildNumberFile)" Lines="$(BuildNumber)" Overwrite="true" />
   </Target>
-  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' != 'true'">
-    <DalamudLibPath>$(appdata)\FFXIVSimpleLauncher\Dalamud\Injector</DalamudLibPath>
-    <AssemblySearchPaths>$(AssemblySearchPaths);$(DalamudLibPath)</AssemblySearchPaths>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
-    <DalamudLibPath>$(MSBuildProjectDirectory)\lib</DalamudLibPath>
-    <AssemblySearchPaths>$(AssemblySearchPaths);$(DalamudLibPath)</AssemblySearchPaths>
-  </PropertyGroup>
-  <ItemGroup Condition="'$(GITHUB_ACTIONS)' != 'true'">
-    <Reference Remove="Dalamud" />
-    <Reference Include="Dalamud">
-      <HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="ImGui.NET">
-      <HintPath>$(DalamudLibPath)\ImGui.NET.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-  </ItemGroup>
-  <ItemGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
-    <Reference Remove="Dalamud" />
-    <Reference Include="Dalamud">
-      <HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="ImGui.NET">
-      <HintPath>$(DalamudLibPath)\ImGui.NET.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-  </ItemGroup>
 </Project>
