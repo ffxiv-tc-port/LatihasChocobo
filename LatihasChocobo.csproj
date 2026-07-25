@@ -12,7 +12,7 @@
     <AssemblyVersion>$(Version)</AssemblyVersion>
     <FileVersion>$(Version)</FileVersion>
     <RepoUrl>https://github.com/Lother/LatihasChocobo</RepoUrl>
-    <Author>Latihas, Lother</Author>
+    <Author>Latihas</Author>
     <Name>LatihasChocobo</Name>
     <Description>自動陸行鳥競賽</Description>
     <Punchline>自動陸行鳥競賽</Punchline>
