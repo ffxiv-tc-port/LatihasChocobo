@@ -14,12 +14,12 @@
     <Version>$(VersionPrefix).$(BuildNumber)</Version>
     <AssemblyVersion>$(Version)</AssemblyVersion>
     <FileVersion>$(Version)</FileVersion>
-    <RepoUrl>https://github.com/Lother/LatihasChocobo</RepoUrl>
+    <RepoUrl>https://github.com/ffxiv-tc-port/LatihasChocobo</RepoUrl>
     <Author>Latihas</Author>
     <Name>LatihasChocobo</Name>
     <Description>自動陸行鳥競賽</Description>
     <Punchline>自動陸行鳥競賽</Punchline>
-    <IconUrl>https://raw.githubusercontent.com/Lother/DalamudPluginsTC/main/icons/LatihasChocobo.png</IconUrl>
+    <IconUrl>https://raw.githubusercontent.com/ffxiv-tc-port/DalamudPluginsTC/main/icons/LatihasChocobo.png</IconUrl>
   </PropertyGroup>
 
   <ItemGroup>
