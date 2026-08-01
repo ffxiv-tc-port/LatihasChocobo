@@ -2,6 +2,9 @@ name: Build Check
 
 on:
   push:
+    # ⚠️ 不要刪掉 branches —— 只留 tags-ignore 的話 GitHub 會把 push 當成「只在 tag
+    # 推送時觸發」，分支推送就永遠不會建置，而且是靜默的（workflow 看起來是綠的，
+    # 因為它根本沒跑）。這個外掛曾經因此整整沒有任何發版前建置驗證。
     branches:
       - 'tc-7.20'
     tags-ignore:
