@@ -221,16 +221,69 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUldManager UldManager, int type) {
-		// NodeListCount 可能在 NodeList 還沒配置時就非 0；節點陣列本身也可能有空洞。
-		// 兩者都不解參考，直接落到下面既有的 throw（不新增例外型別）。
-		if (UldManager.NodeList != null) {
-			for (var i = 0; i < UldManager.NodeListCount; i++) {
-				var Node = UldManager.NodeList[i];
-				if (Node == null) continue;
-				if ((int)Node->Type == type) return Node;
-			}
-		}
+		var node = FindFirstNodeByType(UldManager, type);
+		if (node != null) return node;
 		throw new Exception($"Failed to find BaseComponentNode: {type}");
+	}
+
+	/// <summary>
+	/// 不丟例外版的 <see cref="FirstAtkUnitBaseByType(AtkUldManager,int)"/>：找不到回 <c>null</c>。
+	/// <para>每幀路徑要用這個版本 —— 丟例外那版在「addon 還沒建好」的每一幀都會丟一次，
+	/// 呼叫端接住後又記一行警告，等於每幀洗版。</para>
+	/// <para>NodeListCount 可能在 NodeList 還沒配置時就非 0；節點陣列本身也可能有空洞。兩者都不解參考。</para>
+	/// </summary>
+	internal static unsafe AtkResNode* FindFirstNodeByType(AtkUldManager UldManager, int type) {
+		if (UldManager.NodeList == null) return null;
+		for (var i = 0; i < UldManager.NodeListCount; i++) {
+			var Node = UldManager.NodeList[i];
+			if (Node == null) continue;
+			if ((int)Node->Type == type) return Node;
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// 安全地取節點底下的元件。
+	/// <para>🔴 <c>GetComponent()</c> 是 <c>[MemberFunction]</c> 原生呼叫：對 null 節點呼叫即存取違規，
+	/// 而且**元件還沒建好時它會回 null**，接著解 <c>-&gt;UldManager</c> 是第二個入口。
+	/// AVE 是 .NET Core 的 corrupted-state exception，外圈 <c>try/catch</c> 完全攔不到。</para>
+	/// </summary>
+	internal static unsafe AtkComponentBase* ComponentOf(AtkResNode* node) => node == null ? null : node->GetComponent();
+
+	/// <summary>
+	/// 安全地取文字節點的字串，取不到一律回空字串。
+	/// <para>🔴 <c>GetAsAtkTextNode()</c> 同樣是 <c>[MemberFunction]</c> 原生呼叫：對 null 節點呼叫即存取違規；
+	/// 節點型別不符時回 null，再解 <c>-&gt;NodeText</c> 又是一個入口。</para>
+	/// <para>回空字串是安全的失敗方向：既有的 <c>Contains</c> / <c>StartsWith</c> 判斷對空字串本來就是 false。</para>
+	/// </summary>
+	internal static unsafe string TextOfNode(AtkResNode* node) {
+		if (node == null) return string.Empty;
+		var textNode = node->GetAsAtkTextNode();
+		return textNode == null ? string.Empty : textNode->NodeText.ToString();
+	}
+
+	/// <summary>
+	/// 安全地取圖片節點目前使用的 <c>AtkTexture</c>，取不到回 <c>null</c>。
+	/// <para>🔴 <c>PartsList-&gt;Parts</c> 是原生指標陣列，**只判空是半套**：
+	/// <c>PartId</c> 越界讀到的是堆積垃圾不是 null，再解 <c>UldAsset</c> 就是存取違規。
+	/// 上界的權威來源是 <c>AtkUldPartsList.PartCount</c>（<c>+0x4</c>）。</para>
+	/// </summary>
+	internal static unsafe AtkTexture* TextureOfImageNode(AtkImageNode* imageNode) {
+		if (imageNode == null) return null;
+		var partsList = imageNode->PartsList;
+		if (partsList == null || partsList->Parts == null || imageNode->PartId >= partsList->PartCount) return null;
+		var asset = partsList->Parts[imageNode->PartId].UldAsset;
+		return asset == null ? null : &asset->AtkTexture;
+	}
+
+	/// <summary>
+	/// 安全地取材質的檔名，取不到回 <c>null</c>（<c>null</c> ＝ 讀不到，和「檔名是空字串」分開）。
+	/// </summary>
+	internal static unsafe string? TextureFileName(AtkTexture* texture) {
+		if (texture == null || texture->TextureType != TextureType.Resource) return null;
+		var resource = texture->Resource;
+		if (resource == null || resource->TexFileResourceHandle == null) return null;
+		return resource->TexFileResourceHandle->ResourceHandle.FileName.ToString();
 	}
 	// internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUldManager UldManager, int type) {
 	//     // for (var i = 0; i < UldManager.NodeListCount; i++) {
@@ -271,24 +324,38 @@ public sealed class Plugin : IDalamudPlugin {
 
 	internal static string CanUseItemDebug = "";
 
+	/// <summary>
+	/// 判斷技能列第 1 格上是不是掛著可用的道具。
+	/// <para>🔴 每幀路徑（<see cref="Press"/> 每一幀呼叫）。整條 <c>節點-&gt;元件-&gt;節點-&gt;元件…</c> 都是
+	/// <c>[MemberFunction]</c> 原生呼叫，任一層回 null 之後繼續 <c>-&gt;</c> 就是攔不到的存取違規
+	/// （AVE 是 corrupted-state exception，下面那圈 <c>try/catch</c> 對它完全無效）。
+	/// 所以逐層驗，取不到就收斂成既有的「判斷不出來 ⇒ 回 false」，不動作也不記錄。</para>
+	/// </summary>
 	private static unsafe bool CanUseItem() {
 		AtkImageNode* FinalImageNode = null;
 		try {
 			var _ActionBar = (AtkUnitBase*)GameGui.GetAddonByName("_ActionBar", 1).Address;
 			foreach (var BaseComponentNodew in AllAtkUnitBaseByType(_ActionBar, 1005)) {
-				var BaseComponentNode = BaseComponentNodew.Node;
-				var TextNode = FirstAtkUnitBaseByType(BaseComponentNode->GetComponent()->UldManager, (int)NodeType.Text);
-				if (TextNode->GetAsAtkTextNode()->NodeText.ToString() != "1") continue;
-				var DragDropComponentNode = FirstAtkUnitBaseByType(BaseComponentNode->GetComponent()->UldManager, 1002);
-				var IconComponentNode = FirstAtkUnitBaseByType(DragDropComponentNode->GetComponent()->UldManager, 1001);
-				var TmpFinalImageNode = FirstAtkUnitBaseByType(IconComponentNode->GetComponent()->UldManager, (int)NodeType.Image);
+				var slot = ComponentOf(BaseComponentNodew.Node);
+				if (slot == null) continue;
+				var TextNode = FindFirstNodeByType(slot->UldManager, (int)NodeType.Text);
+				if (TextOfNode(TextNode) != "1") continue;
+				var dragDrop = ComponentOf(FindFirstNodeByType(slot->UldManager, 1002));
+				if (dragDrop == null) break;
+				var icon = ComponentOf(FindFirstNodeByType(dragDrop->UldManager, 1001));
+				if (icon == null) break;
+				var TmpFinalImageNode = FindFirstNodeByType(icon->UldManager, (int)NodeType.Image);
+				if (TmpFinalImageNode == null) break;
 				FinalImageNode = TmpFinalImageNode->GetAsAtkImageNode();
 				break;
 			}
 			if (FinalImageNode == null) { CanUseItemDebug = "(null)"; return false; }
-			var texture = FinalImageNode->PartsList->Parts[FinalImageNode->PartId].UldAsset->AtkTexture;
-			if (texture.TextureType != TextureType.Resource) { CanUseItemDebug = $"(type={texture.TextureType})"; return false; }
-			CanUseItemDebug = texture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString();
+			var texture = TextureOfImageNode(FinalImageNode);
+			if (texture == null) { CanUseItemDebug = "(parts)"; return false; }
+			if (texture->TextureType != TextureType.Resource) { CanUseItemDebug = $"(type={texture->TextureType})"; return false; }
+			var fileName = TextureFileName(texture);
+			if (fileName == null) { CanUseItemDebug = "(res)"; return false; }
+			CanUseItemDebug = fileName;
 			return !CanUseItemDebug.Contains("070101");
 		} catch (Exception e) {
 			Log.Warning(e.ToString());
@@ -342,13 +409,12 @@ public sealed class Plugin : IDalamudPlugin {
 				var btn = node->GetAsAtkComponentButton();
 				if (btn == null || btn->AtkComponentBase.OwnerNode == null) continue;
 				if (!btn->IsEnabled || !node->IsVisible()) continue;
-				try {
-					// 直接用上面已經驗過非 null 的 btn，不再呼叫一次 GetComponent()——
-					// 那是另一個原生呼叫，回 null 時 ->UldManager 又是一個存取違規入口。
-					var textNode = FirstAtkUnitBaseByType(btn->AtkComponentBase.UldManager, (int)NodeType.Text);
-					var text = textNode->GetAsAtkTextNode()->NodeText.ToString();
-					if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
-				} catch { continue; }
+				// 直接用上面已經驗過非 null 的 btn，不再呼叫一次 GetComponent()——
+				// 那是另一個原生呼叫，回 null 時 ->UldManager 又是一個存取違規入口。
+				// GetAsAtkTextNode() 同樣是原生呼叫且會回 null，所以走 TextOfNode 逐層驗
+				// （原本外面那圈 try/catch 對 AVE 完全無效，找不到節點也不需要靠丟例外來 continue）。
+				var text = TextOfNode(FindFirstNodeByType(btn->AtkComponentBase.UldManager, (int)NodeType.Text));
+				if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
 				Click(btn, cf);
 				Log.Info("[RequestRace] 點擊 ContentsFinder 參加按鈕");
 				return true;
@@ -394,6 +460,67 @@ public sealed class Plugin : IDalamudPlugin {
 		_lastRank = rank;
 	}
 
+	/// <summary>
+	/// 從 <c>_RaceChocoboParameter</c> 讀「加速狀態」與「體力百分比」。
+	/// <para>🔴 每幀路徑。addon 在賽前／賽後／載入中都不存在，所以「取不到」是常態不是異常：
+	/// 一律靜默返回（<see cref="speedHigh"/> 維持 false、<see cref="HpPercent"/> 沿用前值），
+	/// **不記錄** —— 這裡記一行就是每幀洗版。</para>
+	/// <para>🔴 <c>NodeList</c> 是原生指標陣列，只判空是半套：<c>NodeListCount</c> 為 0 時
+	/// <c>[Count - 1]</c> 是**索引 -1**，讀到的是陣列前方的堆積垃圾（不是 null），
+	/// 拿去呼叫 <c>GetAsAtkImageNode()</c>（<c>[MemberFunction]</c> 原生呼叫）就是攔不到的存取違規。
+	/// 所以要①容器判空②上界／下界檢查③取出的節點再判空。</para>
+	/// </summary>
+	private static unsafe void UpdateRaceParameter() {
+		var ptr = GameGui.GetAddonByName("_RaceChocoboParameter", 1).Address;
+		if (ptr == IntPtr.Zero) return;
+		var addon = (AtkUnitBase*)ptr;
+
+		var uld = addon->UldManager;
+		if (uld.NodeList != null && uld.NodeListCount > 0) {
+			var lastNode = uld.NodeList[uld.NodeListCount - 1];
+			if (lastNode != null) {
+				var speedNode = lastNode->GetAsAtkImageNode();
+				// IsVisible() 也是 [MemberFunction]，一樣要在節點確定非 null 之後才叫。
+				if (speedNode != null && speedNode->IsVisible()) {
+					var fileName = TextureFileName(TextureOfImageNode(speedNode));
+					if (fileName != null) speedHigh = fileName.Contains("180043");
+				}
+			}
+		}
+
+		var counterNode = FindFirstNodeByType(addon->UldManager, (int)NodeType.Counter);
+		if (counterNode == null) return;
+		var counter = counterNode->GetAsAtkCounterNode();
+		if (counter == null) return;
+		var hpText = counter->NodeText.ToString();
+		// 原本是 float.Parse(text[..^1])：文字還沒填好時會丟例外被外圈接住，HpPercent 沿用前值。
+		// 改成 TryParse，結果一樣（沿用前值）但不會每幀丟例外＋記一行警告。
+		if (hpText.Length >= 2 && float.TryParse(hpText[..^1], out var hp)) HpPercent = hp;
+	}
+
+	/// <summary>
+	/// 從 <c>_ToDoList</c> 讀賽道進度百分比。🔴 每幀路徑，取不到就沿用前一次的
+	/// <see cref="RacePercent"/>（不歸零 —— 歸零會被當成「剛起跑」而改變技能與轉向判斷）。
+	/// </summary>
+	private static unsafe void UpdateRacePercent() {
+		var found = false;
+		var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList", 1).Address;
+		foreach (var BaseComponentNode in AllAtkUnitBaseByType(_ToDoList, 1008)) {
+			// GetComponent() 回 null 時 ->UldManager 是存取違規入口（見 ComponentOf 的說明）。
+			var component = ComponentOf(BaseComponentNode.Node);
+			if (component == null) continue;
+			foreach (var NodeText in AllAtkUnitBaseByType(component->UldManager, (int)NodeType.Text)) {
+				var str = TextOfNode(NodeText.Node);
+				if (!str.StartsWith("進度：")) continue;
+				// 「進度：」3 字 + 至少 1 位數字 + 結尾的 '%'。解析失敗沿用前值。
+				if (str.Length >= 5 && int.TryParse(str[3..^1], out var pct)) RacePercent = 100 - pct;
+				found = true;
+				break;
+			}
+			if (found) break;
+		}
+	}
+
 	private static unsafe void Press(IFramework framework) {
 		CheckRankUp();
 		if (!Configuration.Enabled || !isRunning) return;
@@ -426,30 +553,12 @@ public sealed class Plugin : IDalamudPlugin {
 		// Race
 		speedHigh = false;
 		try {
-			var _RaceChocoboParameter = (AtkUnitBase*)GameGui.GetAddonByName("_RaceChocoboParameter", 1).Address;
-			var _RaceChocoboParameterUldManager = _RaceChocoboParameter->UldManager;
-			var _RaceChocoboParameterSpeedNode = _RaceChocoboParameterUldManager.NodeList[_RaceChocoboParameterUldManager.NodeListCount - 1]->GetAsAtkImageNode();
-			var texture = _RaceChocoboParameterSpeedNode->PartsList->Parts[_RaceChocoboParameterSpeedNode->PartId].UldAsset;
-			if (_RaceChocoboParameterSpeedNode->IsVisible() && texture->AtkTexture.TextureType == TextureType.Resource)
-				speedHigh = texture->AtkTexture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString().Contains("180043");
-			var CounterNode = FirstAtkUnitBaseByType(_RaceChocoboParameter->UldManager, (int)NodeType.Counter)->GetAsAtkCounterNode();
-			HpPercent = float.Parse(CounterNode->NodeText.ToString()[..^1]);
+			UpdateRaceParameter();
 		} catch (Exception e) {
 			Log.Warning(e.ToString());
 		}
 		try {
-			var found = false;
-			var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList", 1).Address;
-			foreach (var BaseComponentNode in AllAtkUnitBaseByType(_ToDoList, 1008)) {
-				foreach (var NodeText in AllAtkUnitBaseByType(BaseComponentNode.Node->GetComponent()->UldManager, (int)NodeType.Text)) {
-					var str = NodeText.Node->GetAsAtkTextNode()->NodeText.ToString();
-					if (!str.StartsWith("進度：")) continue;
-					RacePercent = 100 - int.Parse(str[3..^1]);
-					found = true;
-					break;
-				}
-				if (found) break;
-			}
+			UpdateRacePercent();
 		} catch (Exception e) {
 			Log.Warning(e.ToString());
 		}

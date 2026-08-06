@@ -344,18 +344,25 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				string? ability = null;
 				string? breedCount = null;
 				try {
-					var ItemDetail = (AtkUnitBase*)GameGui.GetAddonByName("ItemDetail", 1).Address;
-					if (ItemDetail->IsVisible) {
+					var itemDetailPtr = GameGui.GetAddonByName("ItemDetail", 1).Address;
+					var ItemDetail = (AtkUnitBase*)itemDetailPtr;
+					// addon 不存在時不解參考（這是 UI 繪製路徑，每幀都會走到）。
+					if (itemDetailPtr != nint.Zero && ItemDetail->IsVisible) {
 						foreach (var TextNode in AllAtkUnitBaseByType(ItemDetail, (int)NodeType.Text)) {
-							var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();
+							// GetAsAtkTextNode() 是 [MemberFunction] 原生呼叫，回 null 時 ->NodeText 就是存取違規；
+							// TextOfNode 逐層驗過，取不到回空字串（Contains 對空字串本來就 false）。
+							var str = TextOfNode(TextNode.Node);
 							if (str.Contains("性陸行鳥配種登記書")) { name = str; itemType = "配種"; }
 							else if (str.Contains("性陸行鳥出賽登記書")) { name = str; itemType = "出賽"; }
 							else if (str.Contains("性陸行鳥退役登記書")) { name = str; itemType = "退役"; }
 						}
 						foreach (var BaseComponentNodeA in AllAtkUnitBaseByType(ItemDetail, 1005)) {
-							var TextNodeA = AllAtkUnitBaseByType(BaseComponentNodeA.Node->GetComponent()->UldManager, (int)NodeType.Text);
+							// GetComponent() 回 null 時 ->UldManager 是存取違規入口。
+							var component = ComponentOf(BaseComponentNodeA.Node);
+							if (component == null) continue;
+							var TextNodeA = AllAtkUnitBaseByType(component->UldManager, (int)NodeType.Text);
 							foreach (var TextNode in TextNodeA) {
-								var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();
+								var str = TextOfNode(TextNode.Node);
 								if (str.Contains("顏色：")) color = str;
 								else if (str.Contains("血統等級：")) pedigree = str;
 								else if (str.Contains("競賽能力：")) ability = str;
@@ -366,11 +373,13 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 							var BaseComponentNodeA = AllAtkUnitBaseByType(node.Node, 1004);
 							if (BaseComponentNodeA.Count != 5) continue;
 							foreach (var BaseComponentNode in BaseComponentNodeA) {
-								var ResNode = FirstAtkUnitBaseByType(BaseComponentNode.Node->GetComponent()->UldManager, (int)NodeType.Res);
+								var starComponent = ComponentOf(BaseComponentNode.Node);
+								if (starComponent == null) continue;
+								var ResNode = FirstAtkUnitBaseByType(starComponent->UldManager, (int)NodeType.Res);
 								var ndata = AllAtkUnitBaseByType(ResNode, (int)NodeType.Text);
 								ndata.Reverse();
 								var d = new string[3];
-								foreach (var str in ndata.Select(TextNode => TextNode.Node->GetAsAtkTextNode()->NodeText.ToString())) {
+								foreach (var str in ndata.Select(TextNode => TextOfNode(TextNode.Node))) {
 									if (str.StartsWith("\u0002H\u0004")) {
 										var sp = str.Split('\u3000');
 										d[1] = sp[0].Substring(32, 4);
