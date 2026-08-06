@@ -211,7 +211,8 @@ public sealed class Plugin : IDalamudPlugin {
 
 	// internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUnitBase* root, int type) => FirstAtkUnitBaseByType(root->UldManager, type);
 	internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkResNode* root, int type) {
-		var prevNode = root->ChildNode;
+		// root 為 null 時不解參考，直接落到下面既有的 throw（不新增例外型別）。
+		var prevNode = root == null ? null : root->ChildNode;
 		while (prevNode != null) {
 			if ((int)prevNode->Type == type) return prevNode;
 			prevNode = prevNode->PrevSiblingNode;
@@ -220,9 +221,14 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUldManager UldManager, int type) {
-		for (var i = 0; i < UldManager.NodeListCount; i++) {
-			var Node = UldManager.NodeList[i];
-			if ((int)Node->Type == type) return Node;
+		// NodeListCount 可能在 NodeList 還沒配置時就非 0；節點陣列本身也可能有空洞。
+		// 兩者都不解參考，直接落到下面既有的 throw（不新增例外型別）。
+		if (UldManager.NodeList != null) {
+			for (var i = 0; i < UldManager.NodeListCount; i++) {
+				var Node = UldManager.NodeList[i];
+				if (Node == null) continue;
+				if ((int)Node->Type == type) return Node;
+			}
 		}
 		throw new Exception($"Failed to find BaseComponentNode: {type}");
 	}
@@ -239,6 +245,7 @@ public sealed class Plugin : IDalamudPlugin {
 
 	internal static unsafe List<AtkResNodeWrapper> AllAtkUnitBaseByType(AtkResNode* root, int type) {
 		List<AtkResNodeWrapper> result = [];
+		if (root == null) return result;
 		var prevNode = root->ChildNode;
 		while (prevNode != null) {
 			if ((int)prevNode->Type == type) result.Add(new AtkResNodeWrapper(prevNode));
@@ -248,13 +255,15 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	internal static unsafe List<AtkResNodeWrapper> AllAtkUnitBaseByType(AtkUnitBase* root, int type) =>
-		AllAtkUnitBaseByType(root->UldManager, type);
+		root == null ? [] : AllAtkUnitBaseByType(root->UldManager, type);
 
 
 	internal static unsafe List<AtkResNodeWrapper> AllAtkUnitBaseByType(AtkUldManager UldManager, int type) {
 		List<AtkResNodeWrapper> result = [];
+		if (UldManager.NodeList == null) return result;
 		for (var i = 0; i < UldManager.NodeListCount; i++) {
 			var Node = UldManager.NodeList[i];
+			if (Node == null) continue;
 			if ((int)Node->Type == type) result.Add(new AtkResNodeWrapper(Node));
 		}
 		return result;
@@ -287,14 +296,35 @@ public sealed class Plugin : IDalamudPlugin {
 		return false;
 	}
 
+	/// <summary>
+	/// 點擊按鈕元件（複用按鈕自身既有的事件）。任何一層取不到就當「這次按不動」直接返回。
+	/// <para>🔴 <c>AtkComponentBase</c> 有<b>兩個</b>指標欄位：<c>+0xA0</c> 的 <c>AtkResNode</c> 與
+	/// <c>+0xA8</c> 的 <c>OwnerNode</c>，而 CS 的 <c>IsEnabled</c> 解的是<b>後者</b>
+	/// （<c>OwnerNode-&gt;AtkResNode.NodeFlags.HasFlag(...)</c>）且對它零 null 檢查。
+	/// 所以「先驗 AtkResNode 再讀 IsEnabled」擋不到東西，必須在讀 <c>IsEnabled</c> 之前
+	/// 就把 <c>OwnerNode</c> 驗掉。AVE 是 .NET Core 的 corrupted-state exception，
+	/// 呼叫端那圈 <c>try/catch</c> 完全攔不到。</para>
+	/// </summary>
 	private static unsafe void Click(AtkComponentButton* target, AtkUnitBase* addon) {
-		if (!target->IsEnabled || !target->AtkResNode->IsVisible()) return;
-		var btnRes = target->AtkComponentBase.OwnerNode->AtkResNode;
+		if (target == null || addon == null) return;
+
+		var owner = target->AtkComponentBase.OwnerNode;
+		if (owner == null) return;
+
+		var res = target->AtkComponentBase.AtkResNode;
+		if (res == null) return;
+
+		if (!target->IsEnabled || !res->IsVisible()) return;
+
+		// 和原本一樣先把 OwnerNode 的 AtkResNode 複製成區域變數再取事件，
+		// 兩次 ReceiveEvent 用的是同一個事件指標（不做第二次即時重讀）。
+		var btnRes = owner->AtkResNode;
 		var evt = btnRes.AtkEventManager.Event;
-		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, btnRes.AtkEventManager.Event);
-		var resetEvt = btnRes.AtkEventManager.Event;
-		resetEvt->State.StateFlags = AtkEventStateFlags.None;
-		addon->ReceiveEvent(resetEvt->State.EventType, (int)resetEvt->Param, btnRes.AtkEventManager.Event);
+		if (evt == null) return;
+
+		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt);
+		evt->State.StateFlags = AtkEventStateFlags.None;
+		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt);
 	}
 
 	private static unsafe bool ClickContentsFinderJoin() {
@@ -304,10 +334,18 @@ public sealed class Plugin : IDalamudPlugin {
 		if (!cf->IsVisible) return false;
 		try {
 			foreach (var nodeWrapper in AllAtkUnitBaseByType(cf, 1001)) {
-				var btn = nodeWrapper.Node->GetAsAtkComponentButton();
-				if (!btn->IsEnabled || !nodeWrapper.Node->IsVisible()) continue;
+				var node = nodeWrapper.Node;
+				if (node == null) continue;
+				// GetAsAtkComponentButton 是 [MemberFunction] 原生呼叫：對 null 節點呼叫會 AVE，
+				// 而且元件本身還沒建好時它會回 null——回 null 之後直接讀 IsEnabled
+				// （解的是沒驗過的 OwnerNode）就是第二個存取違規入口。
+				var btn = node->GetAsAtkComponentButton();
+				if (btn == null || btn->AtkComponentBase.OwnerNode == null) continue;
+				if (!btn->IsEnabled || !node->IsVisible()) continue;
 				try {
-					var textNode = FirstAtkUnitBaseByType(nodeWrapper.Node->GetComponent()->UldManager, (int)NodeType.Text);
+					// 直接用上面已經驗過非 null 的 btn，不再呼叫一次 GetComponent()——
+					// 那是另一個原生呼叫，回 null 時 ->UldManager 又是一個存取違規入口。
+					var textNode = FirstAtkUnitBaseByType(btn->AtkComponentBase.UldManager, (int)NodeType.Text);
 					var text = textNode->GetAsAtkTextNode()->NodeText.ToString();
 					if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
 				} catch { continue; }
@@ -375,8 +413,12 @@ public sealed class Plugin : IDalamudPlugin {
 			var ptr = GameGui.GetAddonByName("RaceChocoboResult", 1).Address;
 			if (ptr != IntPtr.Zero) {
 				var RaceChocoboResult = (AtkUnitBase*)ptr;
-				var ButtonComponentNode = FirstAtkUnitBaseByType(RaceChocoboResult->UldManager, 1001)->GetAsAtkComponentButton();
-				Click(ButtonComponentNode, RaceChocoboResult);
+				// 節點找不到時 FirstAtkUnitBaseByType 會丟一般例外（外面這圈接得到）；
+				// 但 GetAsAtkComponentButton 是 [MemberFunction] 原生呼叫，對 null 節點呼叫會 AVE
+				// （corrupted-state exception，try/catch 攔不到），所以先驗節點再叫。
+				var resultNode = FirstAtkUnitBaseByType(RaceChocoboResult->UldManager, 1001);
+				if (resultNode != null)
+					Click(resultNode->GetAsAtkComponentButton(), RaceChocoboResult);
 			}
 		} catch (Exception) {
 			//ignored
