@@ -215,18 +215,51 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 	// 另外手寫表的「陸行鳥偷取I」「經驗值提高I」在官方表裡沒有 I 字尾（是「陸行鳥偷取」
 	// 「經驗值提高」），名稱前綴也以官方表為準（例：「衝刺」實際叫「陸行鳥衝刺」），
 	// 這樣畫面上的字才跟遊戲內的競賽能力欄位逐字對得起來。
-	private static readonly Dictionary<byte, string> _abilityNameCache = new();
+	//
+	// ── 列上精簡名、滑鼠移上去才給全稱 ──
+	// 台服 7.20 的 ChocoboRaceAbility 共 67 個有名字的能力，其中 33 個帶「陸行鳥」前綴
+	// （陸行鳥衝刺III／陸行鳥體力…），在一個「陸行鳥競賽」外掛的畫面上這三個字每一列都是
+	// 重複資訊，卻是「先天性:… 後天性:…」整行最主要的寬度來源。
+	// 精簡名＝官方名**機械地**去掉這個前綴（不自創縮寫、不動其餘任何一個字），
+	// 全稱與官方效果說明（Description）一起放 tooltip。
+	// ⚠️「未知(0x..)」不參與精簡：那是「不知道」本身，必須原樣留在列上看得見。
+	private static readonly Dictionary<byte, (string Short, string Full, string Desc)> _abilityNameCache = new();
+	private const string AbilityNamePrefix = "陸行鳥";
 
-	private static string AbilityName(byte id) {
-		if (id == 0) return "無";
+	private static (string Short, string Full, string Desc) AbilityInfo(byte id) {
+		if (id == 0) return ("無", "無", string.Empty);
 		if (_abilityNameCache.TryGetValue(id, out var cached)) return cached;
-		var name = DataManager.GetExcelSheet<Lumina.Excel.Sheets.ChocoboRaceAbility>()
-			.GetRowOrDefault(id)?.Name.ExtractText();
+		var row = DataManager.GetExcelSheet<Lumina.Excel.Sheets.ChocoboRaceAbility>().GetRowOrDefault(id);
+		var full = row?.Name.ExtractText();
 		// 查不到就沿用原本的「未知(0x..)」——「不知道」本身要在列上看得見，不要畫成空字串。
 		// 失敗**不進快取**：表還沒載好時查不到是暫時的，快取起來會永久卡住。
-		if (string.IsNullOrEmpty(name)) return $"未知(0x{id:X2})";
-		_abilityNameCache[id] = name;
-		return name;
+		if (string.IsNullOrEmpty(full)) {
+			var unknown = $"未知(0x{id:X2})";
+			return (unknown, unknown, string.Empty);
+		}
+		var shortName = full.Length > AbilityNamePrefix.Length
+		             && full.StartsWith(AbilityNamePrefix, StringComparison.Ordinal)
+			? full[AbilityNamePrefix.Length..]
+			: full;
+		var info = (shortName, full, row?.Description.ExtractText() ?? string.Empty);
+		_abilityNameCache[id] = info;
+		return info;
+	}
+
+	/// <summary>
+	/// 畫一個能力欄位：列上是精簡名，hover 才展開全稱與官方效果說明。
+	/// </summary>
+	private static void DrawAbility(string label, byte id) {
+		var (shortName, full, desc) = AbilityInfo(id);
+		ImGui.TextUnformatted($"{label}:{shortName}");
+		if (!ImGui.IsItemHovered()) return;
+		ImGui.BeginTooltip();
+		ImGui.TextUnformatted(full);
+		if (!string.IsNullOrEmpty(desc)) {
+			ImGui.Separator();
+			ImGui.TextUnformatted(desc);
+		}
+		ImGui.EndTooltip();
 	}
 
 	private static void NewTab(string tabname, Action act) {
@@ -278,7 +311,9 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				ImGui.Text($"當前區域: {ClientState.TerritoryType}, 競賽等級: {mgr->Rank}, 經驗: {mgr->ExperienceCurrent}/{mgr->ExperienceMax}, 上場獲得: {LastRaceExpGain}");
 				ImGui.Text($"可訓練次數: {mgr->SessionsAvailable}");
 				ImGui.TextUnformatted($"最高速度:{mgr->MaximumSpeed}% 加速力:{mgr->Acceleration}% 體力:{mgr->Endurance}% 持久力:{mgr->Stamina}% 適應力:{mgr->Cunning}%");
-				ImGui.Text($"先天性:{AbilityName(mgr->AbilityHereditary)}  後天性:{AbilityName(mgr->AbilityLearned)}");
+				DrawAbility("先天性", mgr->AbilityHereditary);
+				ImGui.SameLine();
+				DrawAbility("後天性", mgr->AbilityLearned);
 				if (ImGui.InputInt("按鍵時長(ms)", ref Configuration.PressMs)) Configuration.Save();
 				if (ImGui.InputFloat("超速也加速機率", ref Configuration.SpeedHighW, 1)) Configuration.Save();
 				if (ImGui.Checkbox("低體力/路長禁用超速加速", ref Configuration.DisableSpeedUpWhenLowHP)) Configuration.Save();
