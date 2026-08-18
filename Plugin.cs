@@ -99,6 +99,7 @@ public sealed class Plugin : IDalamudPlugin {
 	[PluginService] internal static IObjectTable ObjectTable { get; set; } = null!;
 	[PluginService] internal static IClientState ClientState { get; private set; } = null!;
 	[PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+	[PluginService] internal static IDataManager DataManager { get; private set; } = null!;
 [PluginService] private static IChatGui ChatGui { get; set; } = null!;
 
 	private static byte _lastRank;

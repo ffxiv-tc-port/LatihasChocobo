@@ -206,50 +206,28 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 		}
 	}
 
-	private static string AbilityName(byte id) => id switch {
-		0x00 => "無",
-		0x01 => "衝刺",
-		0x02 => "衝刺II",
-		0x04 => "療傷",
-		0x05 => "療傷II",
-		0x07 => "復原",
-		0x08 => "復原II",
-		0x0A => "活力",
-		0x0B => "活力II",
-		0x0D => "鎮靜",
-		0x0E => "鎮靜II",
-		0x10 => "反射",
-		0x11 => "反射II",
-		0x13 => "陸行鳥偷取I",
-		0x14 => "陸行鳥偷取II",
-		0x15 => "陸行鳥偷取III",
-		0x16 => "沉默",
-		0x17 => "沉默II",
-		0x19 => "震盪",
-		0x1A => "震盪II",
-		0x1C => "體力消耗降低",
-		0x1D => "體力消耗降低II",
-		0x1F => "加重耐性",
-		0x20 => "加重耐性II",
-		0x21 => "加重耐性III",
-		0x22 => "加重耐性IV",
-		0x24 => "失控耐性",
-		0x25 => "失控耐性II",
-		0x26 => "失控耐性III",
-		0x27 => "失控耐性IV",
-		0x29 => "體力恢復量提高",
-		0x2A => "體力恢復量提高II",
-		0x2C => "經驗值提高I",
-		0x2D => "經驗值提高II",
-		0x2E => "經驗值提高III",
-		0x30 => "陸行鳥吸收",
-		0x34 => "模仿",
-		0x37 => "鳥羽結界",
-		0x3B => "陸行鳥復生",
-		0x3E => "弱化耐性",
-		0x41 => "減速休息",
-		_ => $"未知(0x{id:X2})"
-	};
+	// 競賽能力名稱直接查遊戲自己的 ChocoboRaceAbility 表（row id 就是 CS 給的能力 id），
+	// 不再維護手寫對照。原本那份表只列了 40 個能力，對照台服 7.20 的官方表少了 27 個：
+	// 每一系的 III 階（衝刺III／療傷III／復原III／活力III／鎮靜III／反射III／沉默III／
+	// 震盪III／體力消耗降低III／體力恢復量提高III／吸收II·III／模仿II·III／鳥羽結界II·III／
+	// 復生II·III／弱化耐性II·III／減速休息II·III）、加重耐性V、失控耐性V，以及
+	// 起跑衝刺、道具變換、超級衝刺。這些原本全部顯示成「未知(0x..)」。
+	// 另外手寫表的「陸行鳥偷取I」「經驗值提高I」在官方表裡沒有 I 字尾（是「陸行鳥偷取」
+	// 「經驗值提高」），名稱前綴也以官方表為準（例：「衝刺」實際叫「陸行鳥衝刺」），
+	// 這樣畫面上的字才跟遊戲內的競賽能力欄位逐字對得起來。
+	private static readonly Dictionary<byte, string> _abilityNameCache = new();
+
+	private static string AbilityName(byte id) {
+		if (id == 0) return "無";
+		if (_abilityNameCache.TryGetValue(id, out var cached)) return cached;
+		var name = DataManager.GetExcelSheet<Lumina.Excel.Sheets.ChocoboRaceAbility>()
+			.GetRowOrDefault(id)?.Name.ExtractText();
+		// 查不到就沿用原本的「未知(0x..)」——「不知道」本身要在列上看得見，不要畫成空字串。
+		// 失敗**不進快取**：表還沒載好時查不到是暫時的，快取起來會永久卡住。
+		if (string.IsNullOrEmpty(name)) return $"未知(0x{id:X2})";
+		_abilityNameCache[id] = name;
+		return name;
+	}
 
 	private static void NewTab(string tabname, Action act) {
 		if (ImGui.BeginTabItem(tabname)) {
