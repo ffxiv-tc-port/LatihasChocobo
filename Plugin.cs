@@ -463,7 +463,21 @@ public sealed class Plugin : IDalamudPlugin {
 
 	private static unsafe void OpenContentsFinder() {
 		try {
-			AgentModule.Instance()->GetAgentByInternalId(AgentId.ContentsFinder)->Show();
+			// 🔴 這一行原本是兩層裸鏈，而且兩層都真的會回 null：
+			// ① CS 的 AgentModule.Instance() 本體就寫著 `uiModule == null ? null : uiModule->GetAgentModule()`
+			//    —— UIModule 還沒建好（登入畫面、跳圖載入中）時它回 null，
+			//    對 null 呼叫 GetAgentByInternalId（[MemberFunction] 原生呼叫）就是存取違規。
+			// ② GetAgentByInternalId 在該 agent 還沒建立時同樣回 null，接著 ->Show() 是第二個入口。
+			// 這裡特別容易踩到：TerritoryChanged 會在延遲數秒後從背景工作呼叫 RequestRace()，
+			// 那個時間點正好可能還在載入畫面。
+			// AVE 是 .NET Core 的 corrupted-state exception，下面這圈 try/catch 對它完全無效，
+			// 只能在呼叫前擋。取不到就當「這次開不起來」靜默返回 —— RequestRace() 後面本來就有
+			// 一次延遲重試的點擊，會走既有的「找不到按鈕」路徑。
+			var agentModule = AgentModule.Instance();
+			if (agentModule == null) return;
+			var agent = agentModule->GetAgentByInternalId(AgentId.ContentsFinder);
+			if (agent == null) return;
+			agent->Show();
 		} catch (Exception ex) {
 			Log.Warning($"[RequestRace] 開啟義務搜尋器失敗: {ex.Message}");
 		}
