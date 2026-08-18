@@ -121,7 +121,10 @@ public sealed class Plugin : IDalamudPlugin {
 	private static extern bool SetForegroundWindow(IntPtr hWnd);
 
 	public static Direction GetTargetSide(IGameObject target) {
-		var player = ClientState.LocalPlayer!;
+		// 每幀的 Press() 與 UI 繪製都會呼叫這裡；取不到玩家就當「判斷不出方向」，
+		// 回 InValid 走既有的「這次不轉向」路徑（原本的 ! 會在載入畫面丟 NRE）。
+		var player = ClientState.LocalPlayer;
+		if (player == null) return Direction.InValid;
 		if (!BadObjectType.ContainsKey(target.DataId) && !GoodObjectType.ContainsKey(target.DataId)) return Direction.InValid;
 		var playerPos = player.Position;
 		var targetPos = target.Position;
@@ -566,8 +569,18 @@ public sealed class Plugin : IDalamudPlugin {
 		var nowTicks = DateTime.Now.Ticks;
 		// 技能2：體力充足(>70%)或進度>75%時使用，最短冷卻20秒
 		var skill2Cooldown = nowTicks - LastPress2 > 200_000_000L;
+		// 🔴 每幀路徑上唯一沒驗過的解參考：載入畫面／登出的瞬間 LocalPlayer 會是 null，
+		// 而 isRunning 這時仍可能是 true（TerritoryChanged 是延遲 AutoDutyWait 秒才設 true 的，
+		// 載入還沒跑完就已經翻成 true）。原本寫 ClientState.LocalPlayer!：NRE 會直接竄出
+		// Framework.Update，被 Dalamud 的 dispatcher 接住後**每幀**記一行 error，
+		// 而且這行之後的整段（速度計算、跳躍錄製、物件掃描、轉向）從此每幀都不執行
+		// ⇒ 對使用者的表現是「外掛沒反應」，不是「外掛報錯」。
+		// 取不到玩家就當這一幀沒有東西可判斷直接跳過（和原本例外竄出的效果一致，只是不洗版）；
+		// 按鍵不會卡住 —— 離開賽道時 TerritoryChanged 已經負責放開 PressTime 裡的所有鍵。
+		var player = ClientState.LocalPlayer;
+		if (player == null) return;
 		// 優先用賽道路程計算實際進度，無資料才退回 UI 百分比
-		var (tPct, _, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, ClientState.LocalPlayer!.Position);
+		var (tPct, _, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, player.Position);
 		var progressPct = totU > 200f ? tPct : RacePercent;
 		var useSkill2 = skill2Cooldown && (HpPercent > 70 || progressPct > 75) && progressPct > 5;
 		if (useSkill2) {
@@ -591,8 +604,7 @@ public sealed class Plugin : IDalamudPlugin {
 			SendMessage(mwh, WM_KEYUP, code, 0);
 		}
 		if (notSpeedHigh) TryPress(Configuration.KC_W);
-		var player = ClientState.LocalPlayer!;
-		// 速度計算
+		// 速度計算（player 已在上面驗過非 null）
 		if (_prevPosTick > 0) {
 			var dt = (nowTicks - _prevPosTick) / 10_000_000f;
 			if (dt > 0.01f) CurrentSpeed = Vector3.Distance(player.Position, _prevPos) / dt;
