@@ -37,7 +37,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 			return;
 		}
 
-		var player = ClientState.LocalPlayer;
+		var player = ObjectTable.LocalPlayer;
 		var allPts = data.Waypoints.Select(w => (w.X, w.Z))
 			.Concat(data.Objects.Select(o => (o.X, o.Z)));
 		if (player != null && ClientState.TerritoryType == territory)
@@ -100,13 +100,13 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 			? ObjectTable
 				.Where(obj => (obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj
 				            || obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
-				           && (BadObjectType.ContainsKey(obj.DataId) || GoodObjectType.ContainsKey(obj.DataId)))
-				.Select(obj => (obj.DataId, obj.Position))
+				           && (BadObjectType.ContainsKey(obj.BaseId) || GoodObjectType.ContainsKey(obj.BaseId)))
+				.Select(obj => (obj.BaseId, obj.Position))
 				.ToList()
 			: [];
 		foreach (var o in data.Objects) {
 			var p = W2C(o.X, o.Z);
-			var isLive = liveSet.Any(l => l.DataId == o.DataId && Vector3.Distance(l.Position, o.Position) < 8f);
+			var isLive = liveSet.Any(l => l.BaseId == o.DataId && Vector3.Distance(l.Position, o.Position) < 8f);
 			var alpha = isLive ? 1f : 0.3f;
 			Vector4 col4 = BadObjectType.ContainsKey(o.DataId)
 				? new Vector4(1f, 0.25f, 0.25f, alpha)
@@ -132,7 +132,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 		if (ClientState.TerritoryType == territory) {
 			var enemyCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0.75f, 0.3f, 1f, 1f));
 			foreach (var obj in ObjectTable) {
-				if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc || obj.DataId != 3705) continue;
+				if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc || obj.BaseId != 3705) continue;
 				var ep = W2C(obj.Position.X, obj.Position.Z);
 				dl.AddCircleFilled(ep, 4f, enemyCol);
 				var eRot = obj.Rotation;
@@ -190,7 +190,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 			}
 		}
 
-		var player = ClientState.LocalPlayer;
+		var player = ObjectTable.LocalPlayer;
 		if (player != null && ClientState.TerritoryType == territory) {
 			var pp2 = new Vector2(player.Position.X, player.Position.Z);
 			var nearIdx = 0; var nearD2 = float.MaxValue;
@@ -254,7 +254,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 
 	[SuppressMessage("ReSharper", "ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator")]
 	public override unsafe void Draw() {
-		if (ClientState.LocalPlayer is null) return;
+		if (ObjectTable.LocalPlayer is null) return;
 		if (ImGui.BeginTabBar("tab")) {
 			NewTab("賽鳥", () => {
 				if (ImGui.Checkbox("啟用", ref Configuration.Enabled)) {
@@ -288,7 +288,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				ImGui.Separator();
 				ImGui.Text($"可使用物品：{(canUseItem ? "是" : "否")}。超速：{(speedHigh ? "是" : "否")}。L:{L}。H:{H}");
 				ImGui.TextDisabled($"道具材質：{CanUseItemDebug}");
-				var (tPct, remU, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, ClientState.LocalPlayer!.Position);
+				var (tPct, remU, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, ObjectTable.LocalPlayer!.Position);
 				var progressStr = totU > 0
 					? $"路程：{tPct:F1}% 剩餘 {remU:F0}/{totU:F0}u"
 					: $"路程(UI)：{RacePercent}%";
@@ -298,15 +298,15 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				List<string[]> data = [];
 				foreach (var obj in GetEventObjects()) {
 					var name = "UNK";
-					if (BadObjectType.TryGetValue(obj.DataId, out var v1)) name = v1;
-					if (GoodObjectType.TryGetValue(obj.DataId, out var v2)) name = v2;
+					if (BadObjectType.TryGetValue(obj.BaseId, out var v1)) name = v1;
+					if (GoodObjectType.TryGetValue(obj.BaseId, out var v2)) name = v2;
 					data.Add([
 						GetTargetSide(obj).ToString(),
 						obj.Position.X.ToString(),
 						obj.Position.Y.ToString(),
 						obj.Position.Z.ToString(),
-						((int)Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position)).ToString(),
-						obj.DataId.ToString(),
+						((int)Vector3.Distance(ObjectTable.LocalPlayer!.Position, obj.Position)).ToString(),
+						obj.BaseId.ToString(),
 						name
 					]);
 				}
@@ -566,13 +566,13 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				ImGui.TextDisabled("顯示附近所有物件，用於識別障礙怪物 DataId");
 				List<string[]> data = [];
 				foreach (var obj in GetNearbyObjects()) {
-					var dist = (int)System.Numerics.Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position);
+					var dist = (int)System.Numerics.Vector3.Distance(ObjectTable.LocalPlayer!.Position, obj.Position);
 					var tag = "";
-					if (GoodObjectType.TryGetValue(obj.DataId, out var g)) tag = g;
-					else if (BadObjectType.TryGetValue(obj.DataId, out var b)) tag = b;
+					if (GoodObjectType.TryGetValue(obj.BaseId, out var g)) tag = g;
+					else if (BadObjectType.TryGetValue(obj.BaseId, out var b)) tag = b;
 					data.Add([
 						obj.ObjectKind.ToString(),
-						obj.DataId.ToString(),
+						obj.BaseId.ToString(),
 						dist.ToString(),
 						obj.Position.X.ToString("F1"),
 						obj.Position.Y.ToString("F1"),

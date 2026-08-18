@@ -124,9 +124,9 @@ public sealed class Plugin : IDalamudPlugin {
 	public static Direction GetTargetSide(IGameObject target) {
 		// 每幀的 Press() 與 UI 繪製都會呼叫這裡；取不到玩家就當「判斷不出方向」，
 		// 回 InValid 走既有的「這次不轉向」路徑（原本的 ! 會在載入畫面丟 NRE）。
-		var player = ClientState.LocalPlayer;
+		var player = ObjectTable.LocalPlayer;
 		if (player == null) return Direction.InValid;
-		if (!BadObjectType.ContainsKey(target.DataId) && !GoodObjectType.ContainsKey(target.DataId)) return Direction.InValid;
+		if (!BadObjectType.ContainsKey(target.BaseId) && !GoodObjectType.ContainsKey(target.BaseId)) return Direction.InValid;
 		var playerPos = player.Position;
 		var targetPos = target.Position;
 		var rotation = player.Rotation;
@@ -143,16 +143,16 @@ public sealed class Plugin : IDalamudPlugin {
 		var cosTheta = Vector2.Dot(forwardDir, toTargetNormalized);
 		cosTheta = Math.Clamp(cosTheta, -1f, 1f);
 		var angleDeg = (float)(Math.Acos(cosTheta) * 180 / Math.PI);
-		var isBadObj = BadObjectType.ContainsKey(target.DataId);
-		var confirmed = isBadObj && TrackMemory.IsConfirmed(ClientState.TerritoryType, target.DataId, target.Position);
+		var isBadObj = BadObjectType.ContainsKey(target.BaseId);
+		var confirmed = isBadObj && TrackMemory.IsConfirmed(ClientState.TerritoryType, target.BaseId, target.Position);
 		// 速度自適應距離：目標在 ~0.75 秒到達範圍內反應，確認物件允許稍遠
 		var speedReach = CurrentSpeed > 1f ? CurrentSpeed * 0.75f : 0f;
 		var badBase = confirmed ? (Configuration.MaxLevelMode ? 26f : 20f) : (Configuration.MaxLevelMode ? 20f : 15f);
 		var badMaxDist = Math.Clamp(MathF.Max(speedReach, badBase), 10f, 32f);
 		// 紅紫陷阱：紅色正前方時跳躍，其他依實際位置向反方向閃
-		if (target.DataId is 2005039 or 2005040) {
+		if (target.BaseId is 2005039 or 2005040) {
 			if (distance > badMaxDist) return Direction.InValid;
-			if (target.DataId == 2005040) {
+			if (target.BaseId == 2005040) {
 				// 依速度和高低差預判起跳時機
 				var baseJumpDist = Configuration.MaxLevelMode ? 20f : 14f;
 				var jumpLeadDist = baseJumpDist;
@@ -179,7 +179,7 @@ public sealed class Plugin : IDalamudPlugin {
 		if (!isBadObj && angleDeg < 22) return Direction.InValid;
 		// 好物件偏側：確認物件擴大轉向距離，未確認維持原有距離
 		if (!isBadObj) {
-			var confirmedGood = TrackMemory.IsConfirmed(ClientState.TerritoryType, target.DataId, target.Position);
+			var confirmedGood = TrackMemory.IsConfirmed(ClientState.TerritoryType, target.BaseId, target.Position);
 			var goodSteerDist = confirmedGood ? 45f : (Configuration.MaxLevelMode ? 30f : 22f);
 			if (distance > goodSteerDist) return Direction.InValid;
 			return crossProduct > 0 ? Direction.Right : Direction.Left;
@@ -190,18 +190,18 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	internal static IGameObject[] GetEventObjects() {
-		if (ClientState.LocalPlayer is null) return [];
+		if (ObjectTable.LocalPlayer is null) return [];
 		return ObjectTable.Where(obj =>
-			Vector3.Distance(ClientState.LocalPlayer.Position, obj.Position) < 75
+			Vector3.Distance(ObjectTable.LocalPlayer.Position, obj.Position) < 75
 			&& obj.ObjectKind == ObjectKind.EventObj
 		).ToArray();
 	}
 
 	internal static IGameObject[] GetNearbyObjects(float range = 50f) {
-		if (ClientState.LocalPlayer is null) return [];
+		if (ObjectTable.LocalPlayer is null) return [];
 		return ObjectTable.Where(obj =>
 			obj.ObjectKind != ObjectKind.Player
-			&& Vector3.Distance(ClientState.LocalPlayer.Position, obj.Position) < range
+			&& Vector3.Distance(ObjectTable.LocalPlayer.Position, obj.Position) < range
 		).ToArray();
 	}
 
@@ -624,7 +624,7 @@ public sealed class Plugin : IDalamudPlugin {
 		// ⇒ 對使用者的表現是「外掛沒反應」，不是「外掛報錯」。
 		// 取不到玩家就當這一幀沒有東西可判斷直接跳過（和原本例外竄出的效果一致，只是不洗版）；
 		// 按鍵不會卡住 —— 離開賽道時 TerritoryChanged 已經負責放開 PressTime 裡的所有鍵。
-		var player = ClientState.LocalPlayer;
+		var player = ObjectTable.LocalPlayer;
 		if (player == null) return;
 		// 優先用賽道路程計算實際進度，無資料才退回 UI 百分比
 		var (tPct, _, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, player.Position);
@@ -693,23 +693,23 @@ public sealed class Plugin : IDalamudPlugin {
 		foreach (var obj in ObjectTable) {
 			if (obj.ObjectKind != ObjectKind.EventObj && obj.ObjectKind != ObjectKind.BattleNpc) continue;
 			var d = Vector3.Distance(player.Position, obj.Position);
-			if (BadObjectType.ContainsKey(obj.DataId)) {
-				TrackMemory.RecordObject(obj.DataId, obj.Position);
+			if (BadObjectType.ContainsKey(obj.BaseId)) {
+				TrackMemory.RecordObject(obj.BaseId, obj.Position);
 				// 只有實際會產生有效閃避方向的壞物件才搶佔優先權
 				if (d < badDist && GetTargetSide(obj) != Direction.InValid) { badTarget = obj; badDist = d; }
-			} else if (GoodObjectType.ContainsKey(obj.DataId)) {
-				TrackMemory.RecordObject(obj.DataId, obj.Position);
+			} else if (GoodObjectType.ContainsKey(obj.BaseId)) {
+				TrackMemory.RecordObject(obj.BaseId, obj.Position);
 				if (d < goodDist) { goodTarget = obj; goodDist = d; }
 			}
 		}
 		TrackMemory.RecordWaypoint(player.Position, player.Rotation);
 		foreach (var obj in ObjectTable) {
-			if (obj.ObjectKind != ObjectKind.BattleNpc || obj.DataId != 3705) continue;
+			if (obj.ObjectKind != ObjectKind.BattleNpc || obj.BaseId != 3705) continue;
 			if (Vector3.Distance(player.Position, obj.Position) < 150f)
 				TrackMemory.RecordOpponentWaypoint(obj.Position, obj.Rotation);
 		}
 		var target = badTarget ?? goodTarget;
-		var isBad = target != null && BadObjectType.ContainsKey(target.DataId);
+		var isBad = target != null && BadObjectType.ContainsKey(target.BaseId);
 		var dir = target != null ? GetTargetSide(target) : Direction.InValid;
 		// bad target 方向無效時嘗試好物件
 		if (dir == Direction.InValid && goodTarget != null) {
