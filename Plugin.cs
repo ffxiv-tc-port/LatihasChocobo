@@ -205,6 +205,38 @@ public sealed class Plugin : IDalamudPlugin {
 		).ToArray();
 	}
 
+	// 每幀路徑上的例外記錄節流。
+	// 下面三個呼叫點（CanUseItem／UpdateRaceParameter／UpdateRacePercent 的 catch）都住在
+	// Framework.Update 裡：一旦開始丟例外就是**每幀**一行完整堆疊，幾秒鐘就把 log 洗掉幾千行，
+	// 把真正要看的東西擠出保留範圍。原本三處都是無條件把例外字串丟給 Warning。
+	// 作法：以「呼叫點標籤＋例外型別＋訊息」當 key，**第一次一定放行**（第一次發生的資訊最重要），
+	// 之後同一個 key 最多每 30 秒記一行，並帶上這段期間被壓掉幾次 —— 壓掉的次數本身要看得見，
+	// 不然「只記一行」會被誤讀成「只發生一次」。
+	// 維持 Warning 級（使用者跑 LogLevel 2，Warning 收得到）。
+	private const long LogThrottleTicks = 30 * 10_000_000L;
+	private static readonly Dictionary<string, (long Last, int Suppressed)> _logThrottle = new();
+
+	private static void LogThrottled(string tag, Exception e) {
+		var key = $"{tag}|{e.GetType().Name}|{e.Message}";
+		var now = DateTime.Now.Ticks;
+		if (_logThrottle.TryGetValue(key, out var st)) {
+			if (now - st.Last < LogThrottleTicks) {
+				_logThrottle[key] = (st.Last, st.Suppressed + 1);
+				return;
+			}
+			_logThrottle[key] = (now, 0);
+			Log.Warning(st.Suppressed > 0
+				? $"[{tag}] {e}（過去 {LogThrottleTicks / 10_000_000L} 秒另有 {st.Suppressed} 次相同例外未記錄）"
+				: $"[{tag}] {e}");
+			return;
+		}
+		// 不同的例外訊息會各佔一個 key；設個上限免得極端情況下無限成長。
+		// 滿了就整份清掉重來（下一次又是「第一次」，一定會記錄，不會靜默漏掉）。
+		if (_logThrottle.Count >= 64) _logThrottle.Clear();
+		_logThrottle[key] = (now, 0);
+		Log.Warning($"[{tag}] {e}");
+	}
+
 	private static void TryPress(int code, float percent = 1000) {
 		if (!PressTime.ContainsKey(code)) PressTime[code] = DateTime.Now.Ticks;
 		if (DateTime.Now.Ticks - PressTime[code] <= PRESS_TIME) return;
@@ -362,7 +394,7 @@ public sealed class Plugin : IDalamudPlugin {
 			CanUseItemDebug = fileName;
 			return !CanUseItemDebug.Contains("070101");
 		} catch (Exception e) {
-			Log.Warning(e.ToString());
+			LogThrottled("CanUseItem", e);
 		}
 		return false;
 	}
@@ -559,12 +591,12 @@ public sealed class Plugin : IDalamudPlugin {
 		try {
 			UpdateRaceParameter();
 		} catch (Exception e) {
-			Log.Warning(e.ToString());
+			LogThrottled("UpdateRaceParameter", e);
 		}
 		try {
 			UpdateRacePercent();
 		} catch (Exception e) {
-			Log.Warning(e.ToString());
+			LogThrottled("UpdateRacePercent", e);
 		}
 		// 用靜止物件計算速度
 		var nowTicks = DateTime.Now.Ticks;
