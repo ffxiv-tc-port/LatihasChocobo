@@ -5,7 +5,37 @@ description: LatihasChocobo（TC版）Dalamud 插件的完整內部架構與運�
 
 # LatihasChocobo（TC版）開發筆記
 
-Dalamud 插件，自動化 FFXIV 陸行鳥競賽（衝刺、閃避、拾取、匹配、學習賽道）。核心邏輯全部集中在 `Plugin.Press()`，掛在 `Framework.Update`，遊戲每幀執行一次，是整個插件唯一的「大腦」。
+Dalamud 插件，自動化 FFXIV 陸行鳥競賽（衝刺、閃避、拾取、匹配、學習賽道）。核心邏輯全部集中在 `Plugin.Press()`，掛在 `Framework.Update`（`Plugin.cs:87` `Framework.Update += Press;`），遊戲每幀執行一次，是整個插件唯一的「大腦」。
+
+## 建置與環境（TC / API13）
+
+- 現況：分支 **`tc-7.20`**、`Dalamud.NET.Sdk/13.0.0`、`LatihasChocobo.json` 的 `DalamudApiLevel` 是 **13**。
+  `tc-7.15` 是凍結的 API12 archive，不要往上面提交（GitHub 的 `origin/HEAD` 還指著 `tc-7.15`，
+  clone 完先 `git checkout tc-7.20`）。
+- 🔴 **直接 `dotnet build` 會失敗**：`Dalamud.NET.Sdk` 預設吃 `DALAMUD_HOME` 環境變數，
+  本機那個變數指向 `%APPDATA%\FFXIVSimpleLauncher\Dalamud\Injector` ——
+  **那裡是啟動器自帶的舊 Dalamud 12.0.2.0**（實測 FileVersion，沒有 `Dalamud.Bindings.ImGui.dll`），
+  結果是 `error CS0234: 命名空間 'Dalamud' 中沒有類型或命名空間名稱 'Bindings'`。
+  建置時要覆蓋成真正的 API13 Dalamud：
+
+  ```powershell
+  $env:DALAMUD_HOME = "<pin目錄>"; dotnet build LatihasChocobo.csproj -c Release
+  ```
+
+  本機實測可用的兩處：`%APPDATA%\xivlauncher\addon\Hooks\dev`（13.0.0.6，與 CI 釘的同版）、
+  `D:\ffxiv-tc-port\Dalamud\bin\Release`（13.0.0.16，TC 遊戲執行期實際載入的那份）。
+  **不要**去覆寫 `%APPDATA%\FFXIVSimpleLauncher\Dalamud\Injector`。
+- ⚠️ CI 釘 13.0.0.6、執行期是 13.0.0.16，**「本機編得過」不等於「CI 編得過」**。
+- csproj 的 `<OutputPath>bin</OutputPath>` 讓產物是**扁平**的 `bin\LatihasChocobo.dll`
+  （沒有 `Release/net9.0-windows` 那幾層），複製別的 repo 的 `PropertyGroup` 過來時不要弄丟。
+- `BuildNumber.txt`（受 git 追蹤）每次 build 都會 +1、**弄髒工作區**，它是建置副產物，
+  `git checkout -- BuildNumber.txt` 還原即可，小心 `git add -A`。
+  工作區髒掉會讓 `release_plugin.py` 判定「有未提交變更」而**跳過這個外掛不發版**。
+  csproj 的 `<VersionPrefix>7.15.0</VersionPrefix>` 跟實際發版無關（`release.yml` 用
+  `-p:Version=<tag>` 從 git tag 覆蓋），feed 上是 `v7.20.0.x` 而 csproj 還寫 `7.15.0` **不是漏改**。
+- 在地化：這個外掛的 UI 字串是直接寫死在 `MainWindow.cs` 的繁中，**完全沒有用到 `ClientLanguage`**
+  （全 repo 搜不到這個型別）。所以 2026-07「TC 的 `ClientLanguage` 從 `ChineseSimplified`(4) 變成
+  `TraditionalChinese`(7)、害一堆外掛靜默掉回英文/日文」那次事件，**本 repo 不受影響、沒有東西要修**。
 
 ## 檔案分工
 - `Plugin.cs` — 插件進入點、主迴圈 `Press()`、閃避方向判定 `GetTargetSide()`、按鍵模擬、UI 內部資料讀取（AtkResNode 解析）、比賽進出事件 `TerritoryChanged`、任務搜尋器自動加入。

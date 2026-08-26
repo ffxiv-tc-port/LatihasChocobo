@@ -1,0 +1,11 @@
+{
+  "Author": "Latihas",
+  "Name": "LatihasChocobo",
+  "InternalName": "LatihasChocobo",
+  "Description": "自動陸行鳥競賽",
+  "Punchline": "自動陸行鳥競賽",
+  "ApplicableVersion": "any",
+  "RepoUrl": "https://github.com/ffxiv-tc-port/LatihasChocobo",
+  "IconUrl": "https://raw.githubusercontent.com/ffxiv-tc-port/DalamudPluginsTC/main/icons/LatihasChocobo.png",
+  "DalamudApiLevel": 13
+}

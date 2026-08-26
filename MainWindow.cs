@@ -37,7 +37,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 			return;
 		}
 
-		var player = ClientState.LocalPlayer;
+		var player = ObjectTable.LocalPlayer;
 		var allPts = data.Waypoints.Select(w => (w.X, w.Z))
 			.Concat(data.Objects.Select(o => (o.X, o.Z)));
 		if (player != null && ClientState.TerritoryType == territory)
@@ -100,13 +100,13 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 			? ObjectTable
 				.Where(obj => (obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj
 				            || obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
-				           && (BadObjectType.ContainsKey(obj.DataId) || GoodObjectType.ContainsKey(obj.DataId)))
-				.Select(obj => (obj.DataId, obj.Position))
+				           && (BadObjectType.ContainsKey(obj.BaseId) || GoodObjectType.ContainsKey(obj.BaseId)))
+				.Select(obj => (obj.BaseId, obj.Position))
 				.ToList()
 			: [];
 		foreach (var o in data.Objects) {
 			var p = W2C(o.X, o.Z);
-			var isLive = liveSet.Any(l => l.DataId == o.DataId && Vector3.Distance(l.Position, o.Position) < 8f);
+			var isLive = liveSet.Any(l => l.BaseId == o.DataId && Vector3.Distance(l.Position, o.Position) < 8f);
 			var alpha = isLive ? 1f : 0.3f;
 			Vector4 col4 = BadObjectType.ContainsKey(o.DataId)
 				? new Vector4(1f, 0.25f, 0.25f, alpha)
@@ -132,7 +132,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 		if (ClientState.TerritoryType == territory) {
 			var enemyCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0.75f, 0.3f, 1f, 1f));
 			foreach (var obj in ObjectTable) {
-				if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc || obj.DataId != 3705) continue;
+				if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc || obj.BaseId != 3705) continue;
 				var ep = W2C(obj.Position.X, obj.Position.Z);
 				dl.AddCircleFilled(ep, 4f, enemyCol);
 				var eRot = obj.Rotation;
@@ -190,7 +190,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 			}
 		}
 
-		var player = ClientState.LocalPlayer;
+		var player = ObjectTable.LocalPlayer;
 		if (player != null && ClientState.TerritoryType == territory) {
 			var pp2 = new Vector2(player.Position.X, player.Position.Z);
 			var nearIdx = 0; var nearD2 = float.MaxValue;
@@ -206,50 +206,61 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 		}
 	}
 
-	private static string AbilityName(byte id) => id switch {
-		0x00 => "無",
-		0x01 => "衝刺",
-		0x02 => "衝刺II",
-		0x04 => "療傷",
-		0x05 => "療傷II",
-		0x07 => "復原",
-		0x08 => "復原II",
-		0x0A => "活力",
-		0x0B => "活力II",
-		0x0D => "鎮靜",
-		0x0E => "鎮靜II",
-		0x10 => "反射",
-		0x11 => "反射II",
-		0x13 => "陸行鳥偷取I",
-		0x14 => "陸行鳥偷取II",
-		0x15 => "陸行鳥偷取III",
-		0x16 => "沉默",
-		0x17 => "沉默II",
-		0x19 => "震盪",
-		0x1A => "震盪II",
-		0x1C => "體力消耗降低",
-		0x1D => "體力消耗降低II",
-		0x1F => "加重耐性",
-		0x20 => "加重耐性II",
-		0x21 => "加重耐性III",
-		0x22 => "加重耐性IV",
-		0x24 => "失控耐性",
-		0x25 => "失控耐性II",
-		0x26 => "失控耐性III",
-		0x27 => "失控耐性IV",
-		0x29 => "體力恢復量提高",
-		0x2A => "體力恢復量提高II",
-		0x2C => "經驗值提高I",
-		0x2D => "經驗值提高II",
-		0x2E => "經驗值提高III",
-		0x30 => "陸行鳥吸收",
-		0x34 => "模仿",
-		0x37 => "鳥羽結界",
-		0x3B => "陸行鳥復生",
-		0x3E => "弱化耐性",
-		0x41 => "減速休息",
-		_ => $"未知(0x{id:X2})"
-	};
+	// 競賽能力名稱直接查遊戲自己的 ChocoboRaceAbility 表（row id 就是 CS 給的能力 id），
+	// 不再維護手寫對照。原本那份表只列了 40 個能力，對照台服 7.20 的官方表少了 27 個：
+	// 每一系的 III 階（衝刺III／療傷III／復原III／活力III／鎮靜III／反射III／沉默III／
+	// 震盪III／體力消耗降低III／體力恢復量提高III／吸收II·III／模仿II·III／鳥羽結界II·III／
+	// 復生II·III／弱化耐性II·III／減速休息II·III）、加重耐性V、失控耐性V，以及
+	// 起跑衝刺、道具變換、超級衝刺。這些原本全部顯示成「未知(0x..)」。
+	// 另外手寫表的「陸行鳥偷取I」「經驗值提高I」在官方表裡沒有 I 字尾（是「陸行鳥偷取」
+	// 「經驗值提高」），名稱前綴也以官方表為準（例：「衝刺」實際叫「陸行鳥衝刺」），
+	// 這樣畫面上的字才跟遊戲內的競賽能力欄位逐字對得起來。
+	//
+	// ── 列上精簡名、滑鼠移上去才給全稱 ──
+	// 台服 7.20 的 ChocoboRaceAbility 共 67 個有名字的能力，其中 33 個帶「陸行鳥」前綴
+	// （陸行鳥衝刺III／陸行鳥體力…），在一個「陸行鳥競賽」外掛的畫面上這三個字每一列都是
+	// 重複資訊，卻是「先天性:… 後天性:…」整行最主要的寬度來源。
+	// 精簡名＝官方名**機械地**去掉這個前綴（不自創縮寫、不動其餘任何一個字），
+	// 全稱與官方效果說明（Description）一起放 tooltip。
+	// ⚠️「未知(0x..)」不參與精簡：那是「不知道」本身，必須原樣留在列上看得見。
+	private static readonly Dictionary<byte, (string Short, string Full, string Desc)> _abilityNameCache = new();
+	private const string AbilityNamePrefix = "陸行鳥";
+
+	private static (string Short, string Full, string Desc) AbilityInfo(byte id) {
+		if (id == 0) return ("無", "無", string.Empty);
+		if (_abilityNameCache.TryGetValue(id, out var cached)) return cached;
+		var row = DataManager.GetExcelSheet<Lumina.Excel.Sheets.ChocoboRaceAbility>().GetRowOrDefault(id);
+		var full = row?.Name.ExtractText();
+		// 查不到就沿用原本的「未知(0x..)」——「不知道」本身要在列上看得見，不要畫成空字串。
+		// 失敗**不進快取**：表還沒載好時查不到是暫時的，快取起來會永久卡住。
+		if (string.IsNullOrEmpty(full)) {
+			var unknown = $"未知(0x{id:X2})";
+			return (unknown, unknown, string.Empty);
+		}
+		var shortName = full.Length > AbilityNamePrefix.Length
+		             && full.StartsWith(AbilityNamePrefix, StringComparison.Ordinal)
+			? full[AbilityNamePrefix.Length..]
+			: full;
+		var info = (shortName, full, row?.Description.ExtractText() ?? string.Empty);
+		_abilityNameCache[id] = info;
+		return info;
+	}
+
+	/// <summary>
+	/// 畫一個能力欄位：列上是精簡名，hover 才展開全稱與官方效果說明。
+	/// </summary>
+	private static void DrawAbility(string label, byte id) {
+		var (shortName, full, desc) = AbilityInfo(id);
+		ImGui.TextUnformatted($"{label}:{shortName}");
+		if (!ImGui.IsItemHovered()) return;
+		ImGui.BeginTooltip();
+		ImGui.TextUnformatted(full);
+		if (!string.IsNullOrEmpty(desc)) {
+			ImGui.Separator();
+			ImGui.TextUnformatted(desc);
+		}
+		ImGui.EndTooltip();
+	}
 
 	private static void NewTab(string tabname, Action act) {
 		if (ImGui.BeginTabItem(tabname)) {
@@ -276,7 +287,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 
 	[SuppressMessage("ReSharper", "ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator")]
 	public override unsafe void Draw() {
-		if (ClientState.LocalPlayer is null) return;
+		if (ObjectTable.LocalPlayer is null) return;
 		if (ImGui.BeginTabBar("tab")) {
 			NewTab("賽鳥", () => {
 				if (ImGui.Checkbox("啟用", ref Configuration.Enabled)) {
@@ -300,7 +311,9 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				ImGui.Text($"當前區域: {ClientState.TerritoryType}, 競賽等級: {mgr->Rank}, 經驗: {mgr->ExperienceCurrent}/{mgr->ExperienceMax}, 上場獲得: {LastRaceExpGain}");
 				ImGui.Text($"可訓練次數: {mgr->SessionsAvailable}");
 				ImGui.TextUnformatted($"最高速度:{mgr->MaximumSpeed}% 加速力:{mgr->Acceleration}% 體力:{mgr->Endurance}% 持久力:{mgr->Stamina}% 適應力:{mgr->Cunning}%");
-				ImGui.Text($"先天性:{AbilityName(mgr->AbilityHereditary)}  後天性:{AbilityName(mgr->AbilityLearned)}");
+				DrawAbility("先天性", mgr->AbilityHereditary);
+				ImGui.SameLine();
+				DrawAbility("後天性", mgr->AbilityLearned);
 				if (ImGui.InputInt("按鍵時長(ms)", ref Configuration.PressMs)) Configuration.Save();
 				if (ImGui.InputFloat("超速也加速機率", ref Configuration.SpeedHighW, 1)) Configuration.Save();
 				if (ImGui.Checkbox("低體力/路長禁用超速加速", ref Configuration.DisableSpeedUpWhenLowHP)) Configuration.Save();
@@ -310,7 +323,7 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				ImGui.Separator();
 				ImGui.Text($"可使用物品：{(canUseItem ? "是" : "否")}。超速：{(speedHigh ? "是" : "否")}。L:{L}。H:{H}");
 				ImGui.TextDisabled($"道具材質：{CanUseItemDebug}");
-				var (tPct, remU, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, ClientState.LocalPlayer!.Position);
+				var (tPct, remU, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, ObjectTable.LocalPlayer!.Position);
 				var progressStr = totU > 0
 					? $"路程：{tPct:F1}% 剩餘 {remU:F0}/{totU:F0}u"
 					: $"路程(UI)：{RacePercent}%";
@@ -320,15 +333,15 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				List<string[]> data = [];
 				foreach (var obj in GetEventObjects()) {
 					var name = "UNK";
-					if (BadObjectType.TryGetValue(obj.DataId, out var v1)) name = v1;
-					if (GoodObjectType.TryGetValue(obj.DataId, out var v2)) name = v2;
+					if (BadObjectType.TryGetValue(obj.BaseId, out var v1)) name = v1;
+					if (GoodObjectType.TryGetValue(obj.BaseId, out var v2)) name = v2;
 					data.Add([
 						GetTargetSide(obj).ToString(),
 						obj.Position.X.ToString(),
 						obj.Position.Y.ToString(),
 						obj.Position.Z.ToString(),
-						((int)Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position)).ToString(),
-						obj.DataId.ToString(),
+						((int)Vector3.Distance(ObjectTable.LocalPlayer!.Position, obj.Position)).ToString(),
+						obj.BaseId.ToString(),
 						name
 					]);
 				}
@@ -344,18 +357,25 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				string? ability = null;
 				string? breedCount = null;
 				try {
-					var ItemDetail = (AtkUnitBase*)GameGui.GetAddonByName("ItemDetail", 1).Address;
-					if (ItemDetail->IsVisible) {
+					var itemDetailPtr = GameGui.GetAddonByName("ItemDetail", 1).Address;
+					var ItemDetail = (AtkUnitBase*)itemDetailPtr;
+					// addon 不存在時不解參考（這是 UI 繪製路徑，每幀都會走到）。
+					if (itemDetailPtr != nint.Zero && ItemDetail->IsVisible) {
 						foreach (var TextNode in AllAtkUnitBaseByType(ItemDetail, (int)NodeType.Text)) {
-							var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();
+							// GetAsAtkTextNode() 是 [MemberFunction] 原生呼叫，回 null 時 ->NodeText 就是存取違規；
+							// TextOfNode 逐層驗過，取不到回空字串（Contains 對空字串本來就 false）。
+							var str = TextOfNode(TextNode.Node);
 							if (str.Contains("性陸行鳥配種登記書")) { name = str; itemType = "配種"; }
 							else if (str.Contains("性陸行鳥出賽登記書")) { name = str; itemType = "出賽"; }
 							else if (str.Contains("性陸行鳥退役登記書")) { name = str; itemType = "退役"; }
 						}
 						foreach (var BaseComponentNodeA in AllAtkUnitBaseByType(ItemDetail, 1005)) {
-							var TextNodeA = AllAtkUnitBaseByType(BaseComponentNodeA.Node->GetComponent()->UldManager, (int)NodeType.Text);
+							// GetComponent() 回 null 時 ->UldManager 是存取違規入口。
+							var component = ComponentOf(BaseComponentNodeA.Node);
+							if (component == null) continue;
+							var TextNodeA = AllAtkUnitBaseByType(component->UldManager, (int)NodeType.Text);
 							foreach (var TextNode in TextNodeA) {
-								var str = TextNode.Node->GetAsAtkTextNode()->NodeText.ToString();
+								var str = TextOfNode(TextNode.Node);
 								if (str.Contains("顏色：")) color = str;
 								else if (str.Contains("血統等級：")) pedigree = str;
 								else if (str.Contains("競賽能力：")) ability = str;
@@ -366,11 +386,13 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 							var BaseComponentNodeA = AllAtkUnitBaseByType(node.Node, 1004);
 							if (BaseComponentNodeA.Count != 5) continue;
 							foreach (var BaseComponentNode in BaseComponentNodeA) {
-								var ResNode = FirstAtkUnitBaseByType(BaseComponentNode.Node->GetComponent()->UldManager, (int)NodeType.Res);
+								var starComponent = ComponentOf(BaseComponentNode.Node);
+								if (starComponent == null) continue;
+								var ResNode = FirstAtkUnitBaseByType(starComponent->UldManager, (int)NodeType.Res);
 								var ndata = AllAtkUnitBaseByType(ResNode, (int)NodeType.Text);
 								ndata.Reverse();
 								var d = new string[3];
-								foreach (var str in ndata.Select(TextNode => TextNode.Node->GetAsAtkTextNode()->NodeText.ToString())) {
+								foreach (var str in ndata.Select(TextNode => TextOfNode(TextNode.Node))) {
 									if (str.StartsWith("\u0002H\u0004")) {
 										var sp = str.Split('\u3000');
 										d[1] = sp[0].Substring(32, 4);
@@ -579,13 +601,13 @@ public class MainWindow() : Window("Chocobo=>CCB?", ImGuiWindowFlags.None, false
 				ImGui.TextDisabled("顯示附近所有物件，用於識別障礙怪物 DataId");
 				List<string[]> data = [];
 				foreach (var obj in GetNearbyObjects()) {
-					var dist = (int)System.Numerics.Vector3.Distance(ClientState.LocalPlayer!.Position, obj.Position);
+					var dist = (int)System.Numerics.Vector3.Distance(ObjectTable.LocalPlayer!.Position, obj.Position);
 					var tag = "";
-					if (GoodObjectType.TryGetValue(obj.DataId, out var g)) tag = g;
-					else if (BadObjectType.TryGetValue(obj.DataId, out var b)) tag = b;
+					if (GoodObjectType.TryGetValue(obj.BaseId, out var g)) tag = g;
+					else if (BadObjectType.TryGetValue(obj.BaseId, out var b)) tag = b;
 					data.Add([
 						obj.ObjectKind.ToString(),
-						obj.DataId.ToString(),
+						obj.BaseId.ToString(),
 						dist.ToString(),
 						obj.Position.X.ToString("F1"),
 						obj.Position.Y.ToString("F1"),

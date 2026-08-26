@@ -1,3 +1,4 @@
+# 2026-08-24 repo 重建後 touch：dispatch-only workflow 不會自動重新註冊，需一個觸及本檔的 commit
 name: Release
 
 on:
@@ -14,6 +15,12 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 9.x
+      - name: Download Dalamud (pinned TC-compatible build)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/ffxiv-tc-port/DalamudPluginsTC/releases/download/dalamud-pin-v13.0.0.16/dalamud-api13-net9.zip -OutFile dalamud-pinned.zip
+          Expand-Archive -Force dalamud-pinned.zip "$env:AppData\FFXIVSimpleLauncher\Dalamud\Injector\"
+          Expand-Archive -Force dalamud-pinned.zip "$env:AppData\xivlauncher\Addon\Hooks\dev\"
       - name: Compute version
         shell: pwsh
         run: |
@@ -35,3 +42,5 @@ jobs:
             LatihasChocobo.zip
             ./bin/LatihasChocobo/LatihasChocobo.json
           generate_release_notes: true
+
+# 2026-08-16: repo 重建後 workflow_dispatch-only workflow 未被 Actions 重新註冊,touch 本檔強制重掃

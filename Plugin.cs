@@ -99,6 +99,7 @@ public sealed class Plugin : IDalamudPlugin {
 	[PluginService] internal static IObjectTable ObjectTable { get; set; } = null!;
 	[PluginService] internal static IClientState ClientState { get; private set; } = null!;
 	[PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+	[PluginService] internal static IDataManager DataManager { get; private set; } = null!;
 [PluginService] private static IChatGui ChatGui { get; set; } = null!;
 
 	private static byte _lastRank;
@@ -121,8 +122,11 @@ public sealed class Plugin : IDalamudPlugin {
 	private static extern bool SetForegroundWindow(IntPtr hWnd);
 
 	public static Direction GetTargetSide(IGameObject target) {
-		var player = ClientState.LocalPlayer!;
-		if (!BadObjectType.ContainsKey(target.DataId) && !GoodObjectType.ContainsKey(target.DataId)) return Direction.InValid;
+		// 每幀的 Press() 與 UI 繪製都會呼叫這裡；取不到玩家就當「判斷不出方向」，
+		// 回 InValid 走既有的「這次不轉向」路徑（原本的 ! 會在載入畫面丟 NRE）。
+		var player = ObjectTable.LocalPlayer;
+		if (player == null) return Direction.InValid;
+		if (!BadObjectType.ContainsKey(target.BaseId) && !GoodObjectType.ContainsKey(target.BaseId)) return Direction.InValid;
 		var playerPos = player.Position;
 		var targetPos = target.Position;
 		var rotation = player.Rotation;
@@ -139,16 +143,16 @@ public sealed class Plugin : IDalamudPlugin {
 		var cosTheta = Vector2.Dot(forwardDir, toTargetNormalized);
 		cosTheta = Math.Clamp(cosTheta, -1f, 1f);
 		var angleDeg = (float)(Math.Acos(cosTheta) * 180 / Math.PI);
-		var isBadObj = BadObjectType.ContainsKey(target.DataId);
-		var confirmed = isBadObj && TrackMemory.IsConfirmed(ClientState.TerritoryType, target.DataId, target.Position);
+		var isBadObj = BadObjectType.ContainsKey(target.BaseId);
+		var confirmed = isBadObj && TrackMemory.IsConfirmed(ClientState.TerritoryType, target.BaseId, target.Position);
 		// 速度自適應距離：目標在 ~0.75 秒到達範圍內反應，確認物件允許稍遠
 		var speedReach = CurrentSpeed > 1f ? CurrentSpeed * 0.75f : 0f;
 		var badBase = confirmed ? (Configuration.MaxLevelMode ? 26f : 20f) : (Configuration.MaxLevelMode ? 20f : 15f);
 		var badMaxDist = Math.Clamp(MathF.Max(speedReach, badBase), 10f, 32f);
 		// 紅紫陷阱：紅色正前方時跳躍，其他依實際位置向反方向閃
-		if (target.DataId is 2005039 or 2005040) {
+		if (target.BaseId is 2005039 or 2005040) {
 			if (distance > badMaxDist) return Direction.InValid;
-			if (target.DataId == 2005040) {
+			if (target.BaseId == 2005040) {
 				// 依速度和高低差預判起跳時機
 				var baseJumpDist = Configuration.MaxLevelMode ? 20f : 14f;
 				var jumpLeadDist = baseJumpDist;
@@ -175,7 +179,7 @@ public sealed class Plugin : IDalamudPlugin {
 		if (!isBadObj && angleDeg < 22) return Direction.InValid;
 		// 好物件偏側：確認物件擴大轉向距離，未確認維持原有距離
 		if (!isBadObj) {
-			var confirmedGood = TrackMemory.IsConfirmed(ClientState.TerritoryType, target.DataId, target.Position);
+			var confirmedGood = TrackMemory.IsConfirmed(ClientState.TerritoryType, target.BaseId, target.Position);
 			var goodSteerDist = confirmedGood ? 45f : (Configuration.MaxLevelMode ? 30f : 22f);
 			if (distance > goodSteerDist) return Direction.InValid;
 			return crossProduct > 0 ? Direction.Right : Direction.Left;
@@ -186,19 +190,51 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	internal static IGameObject[] GetEventObjects() {
-		if (ClientState.LocalPlayer is null) return [];
+		if (ObjectTable.LocalPlayer is null) return [];
 		return ObjectTable.Where(obj =>
-			Vector3.Distance(ClientState.LocalPlayer.Position, obj.Position) < 75
+			Vector3.Distance(ObjectTable.LocalPlayer.Position, obj.Position) < 75
 			&& obj.ObjectKind == ObjectKind.EventObj
 		).ToArray();
 	}
 
 	internal static IGameObject[] GetNearbyObjects(float range = 50f) {
-		if (ClientState.LocalPlayer is null) return [];
+		if (ObjectTable.LocalPlayer is null) return [];
 		return ObjectTable.Where(obj =>
 			obj.ObjectKind != ObjectKind.Player
-			&& Vector3.Distance(ClientState.LocalPlayer.Position, obj.Position) < range
+			&& Vector3.Distance(ObjectTable.LocalPlayer.Position, obj.Position) < range
 		).ToArray();
+	}
+
+	// 每幀路徑上的例外記錄節流。
+	// 下面三個呼叫點（CanUseItem／UpdateRaceParameter／UpdateRacePercent 的 catch）都住在
+	// Framework.Update 裡：一旦開始丟例外就是**每幀**一行完整堆疊，幾秒鐘就把 log 洗掉幾千行，
+	// 把真正要看的東西擠出保留範圍。原本三處都是無條件把例外字串丟給 Warning。
+	// 作法：以「呼叫點標籤＋例外型別＋訊息」當 key，**第一次一定放行**（第一次發生的資訊最重要），
+	// 之後同一個 key 最多每 30 秒記一行，並帶上這段期間被壓掉幾次 —— 壓掉的次數本身要看得見，
+	// 不然「只記一行」會被誤讀成「只發生一次」。
+	// 維持 Warning 級（使用者跑 LogLevel 2，Warning 收得到）。
+	private const long LogThrottleTicks = 30 * 10_000_000L;
+	private static readonly Dictionary<string, (long Last, int Suppressed)> _logThrottle = new();
+
+	private static void LogThrottled(string tag, Exception e) {
+		var key = $"{tag}|{e.GetType().Name}|{e.Message}";
+		var now = DateTime.Now.Ticks;
+		if (_logThrottle.TryGetValue(key, out var st)) {
+			if (now - st.Last < LogThrottleTicks) {
+				_logThrottle[key] = (st.Last, st.Suppressed + 1);
+				return;
+			}
+			_logThrottle[key] = (now, 0);
+			Log.Warning(st.Suppressed > 0
+				? $"[{tag}] {e}（過去 {LogThrottleTicks / 10_000_000L} 秒另有 {st.Suppressed} 次相同例外未記錄）"
+				: $"[{tag}] {e}");
+			return;
+		}
+		// 不同的例外訊息會各佔一個 key；設個上限免得極端情況下無限成長。
+		// 滿了就整份清掉重來（下一次又是「第一次」，一定會記錄，不會靜默漏掉）。
+		if (_logThrottle.Count >= 64) _logThrottle.Clear();
+		_logThrottle[key] = (now, 0);
+		Log.Warning($"[{tag}] {e}");
 	}
 
 	private static void TryPress(int code, float percent = 1000) {
@@ -211,7 +247,8 @@ public sealed class Plugin : IDalamudPlugin {
 
 	// internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUnitBase* root, int type) => FirstAtkUnitBaseByType(root->UldManager, type);
 	internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkResNode* root, int type) {
-		var prevNode = root->ChildNode;
+		// root 為 null 時不解參考，直接落到下面既有的 throw（不新增例外型別）。
+		var prevNode = root == null ? null : root->ChildNode;
 		while (prevNode != null) {
 			if ((int)prevNode->Type == type) return prevNode;
 			prevNode = prevNode->PrevSiblingNode;
@@ -220,11 +257,69 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUldManager UldManager, int type) {
+		var node = FindFirstNodeByType(UldManager, type);
+		if (node != null) return node;
+		throw new Exception($"Failed to find BaseComponentNode: {type}");
+	}
+
+	/// <summary>
+	/// 不丟例外版的 <see cref="FirstAtkUnitBaseByType(AtkUldManager,int)"/>：找不到回 <c>null</c>。
+	/// <para>每幀路徑要用這個版本 —— 丟例外那版在「addon 還沒建好」的每一幀都會丟一次，
+	/// 呼叫端接住後又記一行警告，等於每幀洗版。</para>
+	/// <para>NodeListCount 可能在 NodeList 還沒配置時就非 0；節點陣列本身也可能有空洞。兩者都不解參考。</para>
+	/// </summary>
+	internal static unsafe AtkResNode* FindFirstNodeByType(AtkUldManager UldManager, int type) {
+		if (UldManager.NodeList == null) return null;
 		for (var i = 0; i < UldManager.NodeListCount; i++) {
 			var Node = UldManager.NodeList[i];
+			if (Node == null) continue;
 			if ((int)Node->Type == type) return Node;
 		}
-		throw new Exception($"Failed to find BaseComponentNode: {type}");
+		return null;
+	}
+
+	/// <summary>
+	/// 安全地取節點底下的元件。
+	/// <para>🔴 <c>GetComponent()</c> 是 <c>[MemberFunction]</c> 原生呼叫：對 null 節點呼叫即存取違規，
+	/// 而且**元件還沒建好時它會回 null**，接著解 <c>-&gt;UldManager</c> 是第二個入口。
+	/// AVE 是 .NET Core 的 corrupted-state exception，外圈 <c>try/catch</c> 完全攔不到。</para>
+	/// </summary>
+	internal static unsafe AtkComponentBase* ComponentOf(AtkResNode* node) => node == null ? null : node->GetComponent();
+
+	/// <summary>
+	/// 安全地取文字節點的字串，取不到一律回空字串。
+	/// <para>🔴 <c>GetAsAtkTextNode()</c> 同樣是 <c>[MemberFunction]</c> 原生呼叫：對 null 節點呼叫即存取違規；
+	/// 節點型別不符時回 null，再解 <c>-&gt;NodeText</c> 又是一個入口。</para>
+	/// <para>回空字串是安全的失敗方向：既有的 <c>Contains</c> / <c>StartsWith</c> 判斷對空字串本來就是 false。</para>
+	/// </summary>
+	internal static unsafe string TextOfNode(AtkResNode* node) {
+		if (node == null) return string.Empty;
+		var textNode = node->GetAsAtkTextNode();
+		return textNode == null ? string.Empty : textNode->NodeText.ToString();
+	}
+
+	/// <summary>
+	/// 安全地取圖片節點目前使用的 <c>AtkTexture</c>，取不到回 <c>null</c>。
+	/// <para>🔴 <c>PartsList-&gt;Parts</c> 是原生指標陣列，**只判空是半套**：
+	/// <c>PartId</c> 越界讀到的是堆積垃圾不是 null，再解 <c>UldAsset</c> 就是存取違規。
+	/// 上界的權威來源是 <c>AtkUldPartsList.PartCount</c>（<c>+0x4</c>）。</para>
+	/// </summary>
+	internal static unsafe AtkTexture* TextureOfImageNode(AtkImageNode* imageNode) {
+		if (imageNode == null) return null;
+		var partsList = imageNode->PartsList;
+		if (partsList == null || partsList->Parts == null || imageNode->PartId >= partsList->PartCount) return null;
+		var asset = partsList->Parts[imageNode->PartId].UldAsset;
+		return asset == null ? null : &asset->AtkTexture;
+	}
+
+	/// <summary>
+	/// 安全地取材質的檔名，取不到回 <c>null</c>（<c>null</c> ＝ 讀不到，和「檔名是空字串」分開）。
+	/// </summary>
+	internal static unsafe string? TextureFileName(AtkTexture* texture) {
+		if (texture == null || texture->TextureType != TextureType.Resource) return null;
+		var resource = texture->Resource;
+		if (resource == null || resource->TexFileResourceHandle == null) return null;
+		return resource->TexFileResourceHandle->ResourceHandle.FileName.ToString();
 	}
 	// internal static unsafe AtkResNode* FirstAtkUnitBaseByType(AtkUldManager UldManager, int type) {
 	//     // for (var i = 0; i < UldManager.NodeListCount; i++) {
@@ -239,6 +334,7 @@ public sealed class Plugin : IDalamudPlugin {
 
 	internal static unsafe List<AtkResNodeWrapper> AllAtkUnitBaseByType(AtkResNode* root, int type) {
 		List<AtkResNodeWrapper> result = [];
+		if (root == null) return result;
 		var prevNode = root->ChildNode;
 		while (prevNode != null) {
 			if ((int)prevNode->Type == type) result.Add(new AtkResNodeWrapper(prevNode));
@@ -248,13 +344,15 @@ public sealed class Plugin : IDalamudPlugin {
 	}
 
 	internal static unsafe List<AtkResNodeWrapper> AllAtkUnitBaseByType(AtkUnitBase* root, int type) =>
-		AllAtkUnitBaseByType(root->UldManager, type);
+		root == null ? [] : AllAtkUnitBaseByType(root->UldManager, type);
 
 
 	internal static unsafe List<AtkResNodeWrapper> AllAtkUnitBaseByType(AtkUldManager UldManager, int type) {
 		List<AtkResNodeWrapper> result = [];
+		if (UldManager.NodeList == null) return result;
 		for (var i = 0; i < UldManager.NodeListCount; i++) {
 			var Node = UldManager.NodeList[i];
+			if (Node == null) continue;
 			if ((int)Node->Type == type) result.Add(new AtkResNodeWrapper(Node));
 		}
 		return result;
@@ -262,39 +360,74 @@ public sealed class Plugin : IDalamudPlugin {
 
 	internal static string CanUseItemDebug = "";
 
+	/// <summary>
+	/// 判斷技能列第 1 格上是不是掛著可用的道具。
+	/// <para>🔴 每幀路徑（<see cref="Press"/> 每一幀呼叫）。整條 <c>節點-&gt;元件-&gt;節點-&gt;元件…</c> 都是
+	/// <c>[MemberFunction]</c> 原生呼叫，任一層回 null 之後繼續 <c>-&gt;</c> 就是攔不到的存取違規
+	/// （AVE 是 corrupted-state exception，下面那圈 <c>try/catch</c> 對它完全無效）。
+	/// 所以逐層驗，取不到就收斂成既有的「判斷不出來 ⇒ 回 false」，不動作也不記錄。</para>
+	/// </summary>
 	private static unsafe bool CanUseItem() {
 		AtkImageNode* FinalImageNode = null;
 		try {
 			var _ActionBar = (AtkUnitBase*)GameGui.GetAddonByName("_ActionBar", 1).Address;
 			foreach (var BaseComponentNodew in AllAtkUnitBaseByType(_ActionBar, 1005)) {
-				var BaseComponentNode = BaseComponentNodew.Node;
-				var TextNode = FirstAtkUnitBaseByType(BaseComponentNode->GetComponent()->UldManager, (int)NodeType.Text);
-				if (TextNode->GetAsAtkTextNode()->NodeText.ToString() != "1") continue;
-				var DragDropComponentNode = FirstAtkUnitBaseByType(BaseComponentNode->GetComponent()->UldManager, 1002);
-				var IconComponentNode = FirstAtkUnitBaseByType(DragDropComponentNode->GetComponent()->UldManager, 1001);
-				var TmpFinalImageNode = FirstAtkUnitBaseByType(IconComponentNode->GetComponent()->UldManager, (int)NodeType.Image);
+				var slot = ComponentOf(BaseComponentNodew.Node);
+				if (slot == null) continue;
+				var TextNode = FindFirstNodeByType(slot->UldManager, (int)NodeType.Text);
+				if (TextOfNode(TextNode) != "1") continue;
+				var dragDrop = ComponentOf(FindFirstNodeByType(slot->UldManager, 1002));
+				if (dragDrop == null) break;
+				var icon = ComponentOf(FindFirstNodeByType(dragDrop->UldManager, 1001));
+				if (icon == null) break;
+				var TmpFinalImageNode = FindFirstNodeByType(icon->UldManager, (int)NodeType.Image);
+				if (TmpFinalImageNode == null) break;
 				FinalImageNode = TmpFinalImageNode->GetAsAtkImageNode();
 				break;
 			}
 			if (FinalImageNode == null) { CanUseItemDebug = "(null)"; return false; }
-			var texture = FinalImageNode->PartsList->Parts[FinalImageNode->PartId].UldAsset->AtkTexture;
-			if (texture.TextureType != TextureType.Resource) { CanUseItemDebug = $"(type={texture.TextureType})"; return false; }
-			CanUseItemDebug = texture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString();
+			var texture = TextureOfImageNode(FinalImageNode);
+			if (texture == null) { CanUseItemDebug = "(parts)"; return false; }
+			if (texture->TextureType != TextureType.Resource) { CanUseItemDebug = $"(type={texture->TextureType})"; return false; }
+			var fileName = TextureFileName(texture);
+			if (fileName == null) { CanUseItemDebug = "(res)"; return false; }
+			CanUseItemDebug = fileName;
 			return !CanUseItemDebug.Contains("070101");
 		} catch (Exception e) {
-			Log.Warning(e.ToString());
+			LogThrottled("CanUseItem", e);
 		}
 		return false;
 	}
 
+	/// <summary>
+	/// 點擊按鈕元件（複用按鈕自身既有的事件）。任何一層取不到就當「這次按不動」直接返回。
+	/// <para>🔴 <c>AtkComponentBase</c> 有<b>兩個</b>指標欄位：<c>+0xA0</c> 的 <c>AtkResNode</c> 與
+	/// <c>+0xA8</c> 的 <c>OwnerNode</c>，而 CS 的 <c>IsEnabled</c> 解的是<b>後者</b>
+	/// （<c>OwnerNode-&gt;AtkResNode.NodeFlags.HasFlag(...)</c>）且對它零 null 檢查。
+	/// 所以「先驗 AtkResNode 再讀 IsEnabled」擋不到東西，必須在讀 <c>IsEnabled</c> 之前
+	/// 就把 <c>OwnerNode</c> 驗掉。AVE 是 .NET Core 的 corrupted-state exception，
+	/// 呼叫端那圈 <c>try/catch</c> 完全攔不到。</para>
+	/// </summary>
 	private static unsafe void Click(AtkComponentButton* target, AtkUnitBase* addon) {
-		if (!target->IsEnabled || !target->AtkResNode->IsVisible()) return;
-		var btnRes = target->AtkComponentBase.OwnerNode->AtkResNode;
+		if (target == null || addon == null) return;
+
+		var owner = target->AtkComponentBase.OwnerNode;
+		if (owner == null) return;
+
+		var res = target->AtkComponentBase.AtkResNode;
+		if (res == null) return;
+
+		if (!target->IsEnabled || !res->IsVisible()) return;
+
+		// 和原本一樣先把 OwnerNode 的 AtkResNode 複製成區域變數再取事件，
+		// 兩次 ReceiveEvent 用的是同一個事件指標（不做第二次即時重讀）。
+		var btnRes = owner->AtkResNode;
 		var evt = btnRes.AtkEventManager.Event;
-		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, btnRes.AtkEventManager.Event);
-		var resetEvt = btnRes.AtkEventManager.Event;
-		resetEvt->State.StateFlags = AtkEventStateFlags.None;
-		addon->ReceiveEvent(resetEvt->State.EventType, (int)resetEvt->Param, btnRes.AtkEventManager.Event);
+		if (evt == null) return;
+
+		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt);
+		evt->State.StateFlags = AtkEventStateFlags.None;
+		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt);
 	}
 
 	private static unsafe bool ClickContentsFinderJoin() {
@@ -304,13 +437,20 @@ public sealed class Plugin : IDalamudPlugin {
 		if (!cf->IsVisible) return false;
 		try {
 			foreach (var nodeWrapper in AllAtkUnitBaseByType(cf, 1001)) {
-				var btn = nodeWrapper.Node->GetAsAtkComponentButton();
-				if (!btn->IsEnabled || !nodeWrapper.Node->IsVisible()) continue;
-				try {
-					var textNode = FirstAtkUnitBaseByType(nodeWrapper.Node->GetComponent()->UldManager, (int)NodeType.Text);
-					var text = textNode->GetAsAtkTextNode()->NodeText.ToString();
-					if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
-				} catch { continue; }
+				var node = nodeWrapper.Node;
+				if (node == null) continue;
+				// GetAsAtkComponentButton 是 [MemberFunction] 原生呼叫：對 null 節點呼叫會 AVE，
+				// 而且元件本身還沒建好時它會回 null——回 null 之後直接讀 IsEnabled
+				// （解的是沒驗過的 OwnerNode）就是第二個存取違規入口。
+				var btn = node->GetAsAtkComponentButton();
+				if (btn == null || btn->AtkComponentBase.OwnerNode == null) continue;
+				if (!btn->IsEnabled || !node->IsVisible()) continue;
+				// 直接用上面已經驗過非 null 的 btn，不再呼叫一次 GetComponent()——
+				// 那是另一個原生呼叫，回 null 時 ->UldManager 又是一個存取違規入口。
+				// GetAsAtkTextNode() 同樣是原生呼叫且會回 null，所以走 TextOfNode 逐層驗
+				// （原本外面那圈 try/catch 對 AVE 完全無效，找不到節點也不需要靠丟例外來 continue）。
+				var text = TextOfNode(FindFirstNodeByType(btn->AtkComponentBase.UldManager, (int)NodeType.Text));
+				if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
 				Click(btn, cf);
 				Log.Info("[RequestRace] 點擊 ContentsFinder 參加按鈕");
 				return true;
@@ -323,7 +463,21 @@ public sealed class Plugin : IDalamudPlugin {
 
 	private static unsafe void OpenContentsFinder() {
 		try {
-			AgentModule.Instance()->GetAgentByInternalId(AgentId.ContentsFinder)->Show();
+			// 🔴 這一行原本是兩層裸鏈，而且兩層都真的會回 null：
+			// ① CS 的 AgentModule.Instance() 本體就寫著 `uiModule == null ? null : uiModule->GetAgentModule()`
+			//    —— UIModule 還沒建好（登入畫面、跳圖載入中）時它回 null，
+			//    對 null 呼叫 GetAgentByInternalId（[MemberFunction] 原生呼叫）就是存取違規。
+			// ② GetAgentByInternalId 在該 agent 還沒建立時同樣回 null，接著 ->Show() 是第二個入口。
+			// 這裡特別容易踩到：TerritoryChanged 會在延遲數秒後從背景工作呼叫 RequestRace()，
+			// 那個時間點正好可能還在載入畫面。
+			// AVE 是 .NET Core 的 corrupted-state exception，下面這圈 try/catch 對它完全無效，
+			// 只能在呼叫前擋。取不到就當「這次開不起來」靜默返回 —— RequestRace() 後面本來就有
+			// 一次延遲重試的點擊，會走既有的「找不到按鈕」路徑。
+			var agentModule = AgentModule.Instance();
+			if (agentModule == null) return;
+			var agent = agentModule->GetAgentByInternalId(AgentId.ContentsFinder);
+			if (agent == null) return;
+			agent->Show();
 		} catch (Exception ex) {
 			Log.Warning($"[RequestRace] 開啟義務搜尋器失敗: {ex.Message}");
 		}
@@ -356,6 +510,67 @@ public sealed class Plugin : IDalamudPlugin {
 		_lastRank = rank;
 	}
 
+	/// <summary>
+	/// 從 <c>_RaceChocoboParameter</c> 讀「加速狀態」與「體力百分比」。
+	/// <para>🔴 每幀路徑。addon 在賽前／賽後／載入中都不存在，所以「取不到」是常態不是異常：
+	/// 一律靜默返回（<see cref="speedHigh"/> 維持 false、<see cref="HpPercent"/> 沿用前值），
+	/// **不記錄** —— 這裡記一行就是每幀洗版。</para>
+	/// <para>🔴 <c>NodeList</c> 是原生指標陣列，只判空是半套：<c>NodeListCount</c> 為 0 時
+	/// <c>[Count - 1]</c> 是**索引 -1**，讀到的是陣列前方的堆積垃圾（不是 null），
+	/// 拿去呼叫 <c>GetAsAtkImageNode()</c>（<c>[MemberFunction]</c> 原生呼叫）就是攔不到的存取違規。
+	/// 所以要①容器判空②上界／下界檢查③取出的節點再判空。</para>
+	/// </summary>
+	private static unsafe void UpdateRaceParameter() {
+		var ptr = GameGui.GetAddonByName("_RaceChocoboParameter", 1).Address;
+		if (ptr == IntPtr.Zero) return;
+		var addon = (AtkUnitBase*)ptr;
+
+		var uld = addon->UldManager;
+		if (uld.NodeList != null && uld.NodeListCount > 0) {
+			var lastNode = uld.NodeList[uld.NodeListCount - 1];
+			if (lastNode != null) {
+				var speedNode = lastNode->GetAsAtkImageNode();
+				// IsVisible() 也是 [MemberFunction]，一樣要在節點確定非 null 之後才叫。
+				if (speedNode != null && speedNode->IsVisible()) {
+					var fileName = TextureFileName(TextureOfImageNode(speedNode));
+					if (fileName != null) speedHigh = fileName.Contains("180043");
+				}
+			}
+		}
+
+		var counterNode = FindFirstNodeByType(addon->UldManager, (int)NodeType.Counter);
+		if (counterNode == null) return;
+		var counter = counterNode->GetAsAtkCounterNode();
+		if (counter == null) return;
+		var hpText = counter->NodeText.ToString();
+		// 原本是 float.Parse(text[..^1])：文字還沒填好時會丟例外被外圈接住，HpPercent 沿用前值。
+		// 改成 TryParse，結果一樣（沿用前值）但不會每幀丟例外＋記一行警告。
+		if (hpText.Length >= 2 && float.TryParse(hpText[..^1], out var hp)) HpPercent = hp;
+	}
+
+	/// <summary>
+	/// 從 <c>_ToDoList</c> 讀賽道進度百分比。🔴 每幀路徑，取不到就沿用前一次的
+	/// <see cref="RacePercent"/>（不歸零 —— 歸零會被當成「剛起跑」而改變技能與轉向判斷）。
+	/// </summary>
+	private static unsafe void UpdateRacePercent() {
+		var found = false;
+		var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList", 1).Address;
+		foreach (var BaseComponentNode in AllAtkUnitBaseByType(_ToDoList, 1008)) {
+			// GetComponent() 回 null 時 ->UldManager 是存取違規入口（見 ComponentOf 的說明）。
+			var component = ComponentOf(BaseComponentNode.Node);
+			if (component == null) continue;
+			foreach (var NodeText in AllAtkUnitBaseByType(component->UldManager, (int)NodeType.Text)) {
+				var str = TextOfNode(NodeText.Node);
+				if (!str.StartsWith("進度：")) continue;
+				// 「進度：」3 字 + 至少 1 位數字 + 結尾的 '%'。解析失敗沿用前值。
+				if (str.Length >= 5 && int.TryParse(str[3..^1], out var pct)) RacePercent = 100 - pct;
+				found = true;
+				break;
+			}
+			if (found) break;
+		}
+	}
+
 	private static unsafe void Press(IFramework framework) {
 		CheckRankUp();
 		if (!Configuration.Enabled || !isRunning) return;
@@ -375,8 +590,12 @@ public sealed class Plugin : IDalamudPlugin {
 			var ptr = GameGui.GetAddonByName("RaceChocoboResult", 1).Address;
 			if (ptr != IntPtr.Zero) {
 				var RaceChocoboResult = (AtkUnitBase*)ptr;
-				var ButtonComponentNode = FirstAtkUnitBaseByType(RaceChocoboResult->UldManager, 1001)->GetAsAtkComponentButton();
-				Click(ButtonComponentNode, RaceChocoboResult);
+				// 節點找不到時 FirstAtkUnitBaseByType 會丟一般例外（外面這圈接得到）；
+				// 但 GetAsAtkComponentButton 是 [MemberFunction] 原生呼叫，對 null 節點呼叫會 AVE
+				// （corrupted-state exception，try/catch 攔不到），所以先驗節點再叫。
+				var resultNode = FirstAtkUnitBaseByType(RaceChocoboResult->UldManager, 1001);
+				if (resultNode != null)
+					Click(resultNode->GetAsAtkComponentButton(), RaceChocoboResult);
 			}
 		} catch (Exception) {
 			//ignored
@@ -384,39 +603,31 @@ public sealed class Plugin : IDalamudPlugin {
 		// Race
 		speedHigh = false;
 		try {
-			var _RaceChocoboParameter = (AtkUnitBase*)GameGui.GetAddonByName("_RaceChocoboParameter", 1).Address;
-			var _RaceChocoboParameterUldManager = _RaceChocoboParameter->UldManager;
-			var _RaceChocoboParameterSpeedNode = _RaceChocoboParameterUldManager.NodeList[_RaceChocoboParameterUldManager.NodeListCount - 1]->GetAsAtkImageNode();
-			var texture = _RaceChocoboParameterSpeedNode->PartsList->Parts[_RaceChocoboParameterSpeedNode->PartId].UldAsset;
-			if (_RaceChocoboParameterSpeedNode->IsVisible() && texture->AtkTexture.TextureType == TextureType.Resource)
-				speedHigh = texture->AtkTexture.Resource->TexFileResourceHandle->ResourceHandle.FileName.ToString().Contains("180043");
-			var CounterNode = FirstAtkUnitBaseByType(_RaceChocoboParameter->UldManager, (int)NodeType.Counter)->GetAsAtkCounterNode();
-			HpPercent = float.Parse(CounterNode->NodeText.ToString()[..^1]);
+			UpdateRaceParameter();
 		} catch (Exception e) {
-			Log.Warning(e.ToString());
+			LogThrottled("UpdateRaceParameter", e);
 		}
 		try {
-			var found = false;
-			var _ToDoList = (AtkUnitBase*)GameGui.GetAddonByName("_ToDoList", 1).Address;
-			foreach (var BaseComponentNode in AllAtkUnitBaseByType(_ToDoList, 1008)) {
-				foreach (var NodeText in AllAtkUnitBaseByType(BaseComponentNode.Node->GetComponent()->UldManager, (int)NodeType.Text)) {
-					var str = NodeText.Node->GetAsAtkTextNode()->NodeText.ToString();
-					if (!str.StartsWith("進度：")) continue;
-					RacePercent = 100 - int.Parse(str[3..^1]);
-					found = true;
-					break;
-				}
-				if (found) break;
-			}
+			UpdateRacePercent();
 		} catch (Exception e) {
-			Log.Warning(e.ToString());
+			LogThrottled("UpdateRacePercent", e);
 		}
 		// 用靜止物件計算速度
 		var nowTicks = DateTime.Now.Ticks;
 		// 技能2：體力充足(>70%)或進度>75%時使用，最短冷卻20秒
 		var skill2Cooldown = nowTicks - LastPress2 > 200_000_000L;
+		// 🔴 每幀路徑上唯一沒驗過的解參考：載入畫面／登出的瞬間 LocalPlayer 會是 null，
+		// 而 isRunning 這時仍可能是 true（TerritoryChanged 是延遲 AutoDutyWait 秒才設 true 的，
+		// 載入還沒跑完就已經翻成 true）。原本寫 ClientState.LocalPlayer!：NRE 會直接竄出
+		// Framework.Update，被 Dalamud 的 dispatcher 接住後**每幀**記一行 error，
+		// 而且這行之後的整段（速度計算、跳躍錄製、物件掃描、轉向）從此每幀都不執行
+		// ⇒ 對使用者的表現是「外掛沒反應」，不是「外掛報錯」。
+		// 取不到玩家就當這一幀沒有東西可判斷直接跳過（和原本例外竄出的效果一致，只是不洗版）；
+		// 按鍵不會卡住 —— 離開賽道時 TerritoryChanged 已經負責放開 PressTime 裡的所有鍵。
+		var player = ObjectTable.LocalPlayer;
+		if (player == null) return;
 		// 優先用賽道路程計算實際進度，無資料才退回 UI 百分比
-		var (tPct, _, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, ClientState.LocalPlayer!.Position);
+		var (tPct, _, totU) = TrackMemory.GetTrackProgress(ClientState.TerritoryType, player.Position);
 		var progressPct = totU > 200f ? tPct : RacePercent;
 		var useSkill2 = skill2Cooldown && (HpPercent > 70 || progressPct > 75) && progressPct > 5;
 		if (useSkill2) {
@@ -440,8 +651,7 @@ public sealed class Plugin : IDalamudPlugin {
 			SendMessage(mwh, WM_KEYUP, code, 0);
 		}
 		if (notSpeedHigh) TryPress(Configuration.KC_W);
-		var player = ClientState.LocalPlayer!;
-		// 速度計算
+		// 速度計算（player 已在上面驗過非 null）
 		if (_prevPosTick > 0) {
 			var dt = (nowTicks - _prevPosTick) / 10_000_000f;
 			if (dt > 0.01f) CurrentSpeed = Vector3.Distance(player.Position, _prevPos) / dt;
@@ -483,23 +693,23 @@ public sealed class Plugin : IDalamudPlugin {
 		foreach (var obj in ObjectTable) {
 			if (obj.ObjectKind != ObjectKind.EventObj && obj.ObjectKind != ObjectKind.BattleNpc) continue;
 			var d = Vector3.Distance(player.Position, obj.Position);
-			if (BadObjectType.ContainsKey(obj.DataId)) {
-				TrackMemory.RecordObject(obj.DataId, obj.Position);
+			if (BadObjectType.ContainsKey(obj.BaseId)) {
+				TrackMemory.RecordObject(obj.BaseId, obj.Position);
 				// 只有實際會產生有效閃避方向的壞物件才搶佔優先權
 				if (d < badDist && GetTargetSide(obj) != Direction.InValid) { badTarget = obj; badDist = d; }
-			} else if (GoodObjectType.ContainsKey(obj.DataId)) {
-				TrackMemory.RecordObject(obj.DataId, obj.Position);
+			} else if (GoodObjectType.ContainsKey(obj.BaseId)) {
+				TrackMemory.RecordObject(obj.BaseId, obj.Position);
 				if (d < goodDist) { goodTarget = obj; goodDist = d; }
 			}
 		}
 		TrackMemory.RecordWaypoint(player.Position, player.Rotation);
 		foreach (var obj in ObjectTable) {
-			if (obj.ObjectKind != ObjectKind.BattleNpc || obj.DataId != 3705) continue;
+			if (obj.ObjectKind != ObjectKind.BattleNpc || obj.BaseId != 3705) continue;
 			if (Vector3.Distance(player.Position, obj.Position) < 150f)
 				TrackMemory.RecordOpponentWaypoint(obj.Position, obj.Rotation);
 		}
 		var target = badTarget ?? goodTarget;
-		var isBad = target != null && BadObjectType.ContainsKey(target.DataId);
+		var isBad = target != null && BadObjectType.ContainsKey(target.BaseId);
 		var dir = target != null ? GetTargetSide(target) : Direction.InValid;
 		// bad target 方向無效時嘗試好物件
 		if (dir == Direction.InValid && goodTarget != null) {
