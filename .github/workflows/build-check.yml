@@ -1,0 +1,41 @@
+name: Build Check
+
+on:
+  push:
+    tags-ignore:
+      - 'v*'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check if VersionPrefix changed from baseline
+        id: check
+        shell: bash
+        run: |
+          PREFIX=$(grep -oP '(?<=<VersionPrefix>)[^<]+' LatihasChocobo.csproj)
+          echo "Current VersionPrefix: $PREFIX (baseline: 7.15.0)"
+          if [ "$PREFIX" = "7.15.0" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 9.x
+      - name: Build with dotnet
+        run: dotnet build --configuration Release

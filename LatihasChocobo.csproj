@@ -1,17 +1,31 @@
-﻿<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <OutputPath>bin</OutputPath>
   </PropertyGroup>
   <PropertyGroup>
-    <Version>7.51.2.0</Version>
-    <RepoUrl>https://github.com/Latihas/LatihasChocobo</RepoUrl>
+    <BuildNumberFile>$(MSBuildProjectDirectory)\BuildNumber.txt</BuildNumberFile>
+    <_PreviousBuildNumber Condition="Exists('$(BuildNumberFile)')">$([System.IO.File]::ReadAllText('$(BuildNumberFile)').Trim())</_PreviousBuildNumber>
+    <_PreviousBuildNumber Condition="'$(_PreviousBuildNumber)' == ''">0</_PreviousBuildNumber>
+    <BuildNumber>$([MSBuild]::Add($(_PreviousBuildNumber), 1))</BuildNumber>
+    <VersionPrefix>7.15.0</VersionPrefix>
+    <Version>$(VersionPrefix).$(BuildNumber)</Version>
+    <AssemblyVersion>$(Version)</AssemblyVersion>
+    <FileVersion>$(Version)</FileVersion>
+    <RepoUrl>https://github.com/Lother/LatihasChocobo</RepoUrl>
     <Author>Latihas</Author>
     <Name>LatihasChocobo</Name>
-    <Description>陆行鸟竞赛自动化</Description>
-    <Punchline>陆行鸟竞赛自动化</Punchline>
+    <Description>自動陸行鳥競賽</Description>
+    <Punchline>自動陸行鳥競賽</Punchline>
+    <IconUrl>https://raw.githubusercontent.com/Lother/DalamudPluginsTC/main/icons/LatihasChocobo.png</IconUrl>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == ''">
-    <DalamudLibPath>$(appdata)\XIVLauncherCN\addon\Hooks\dev</DalamudLibPath>
-    <AssemblySearchPaths>$(AssemblySearchPaths);$(DalamudLibPath)</AssemblySearchPaths>
-  </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="Resources\icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="PersistBuildNumber" AfterTargets="Build">
+    <WriteLinesToFile File="$(BuildNumberFile)" Lines="$(BuildNumber)" Overwrite="true" />
+  </Target>
 </Project>
