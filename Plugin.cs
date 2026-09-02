@@ -84,6 +84,9 @@ public sealed class Plugin : IDalamudPlugin {
 		PluginInterface.UiBuilder.OpenMainUi += OnCommand;
 		TryFindGameWindow(out mwh);
 		TrackMemory.Init(PluginInterface.GetPluginConfigDirectory());
+		// 守衛的時鐘與解除掃描要排在 Press 前面: 同一個外掛內部的 Framework.Update 是單一 try/catch 包住
+		// 整條多播委派, 排前面的處理常式擲例外會讓後面全部那個 tick 不被呼叫 —— 時鐘停掉等於逃生口永不到期。
+		AddonPressGuard.Attach(Framework);
 		Framework.Update += Press;
 		ClientState.TerritoryChanged += TerritoryChanged;
 		if (InRace()) { _raceStartTerritory = ClientState.TerritoryType; TrackMemory.StartRace(); isRunning = true; }
@@ -93,7 +96,7 @@ public sealed class Plugin : IDalamudPlugin {
 
 	internal static MConfiguration Configuration { get; private set; } = null!;
 	[PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
-	[PluginService] private static IPluginLog Log { get; set; } = null!;
+	[PluginService] internal static IPluginLog Log { get; set; } = null!;
 	[PluginService] private static ICommandManager CommandManager { get; set; } = null!;
 	[PluginService] private static IFramework Framework { get; set; } = null!;
 	[PluginService] internal static IObjectTable ObjectTable { get; set; } = null!;
@@ -110,6 +113,7 @@ public sealed class Plugin : IDalamudPlugin {
 		CommandManager.RemoveHandler("/latihaschocobo");
 		ClientState.TerritoryChanged -= TerritoryChanged;
 		Framework.Update -= Press;
+		AddonPressGuard.Detach(Framework);
 	}
 
 	[DllImport("user32.dll")]
@@ -408,7 +412,7 @@ public sealed class Plugin : IDalamudPlugin {
 	/// 就把 <c>OwnerNode</c> 驗掉。AVE 是 .NET Core 的 corrupted-state exception，
 	/// 呼叫端那圈 <c>try/catch</c> 完全攔不到。</para>
 	/// </summary>
-	private static unsafe void Click(AtkComponentButton* target, AtkUnitBase* addon) {
+	private static unsafe void Click(AtkComponentButton* target, AtkUnitBase* addon, string addonName) {
 		if (target == null || addon == null) return;
 
 		var owner = target->AtkComponentBase.OwnerNode;
@@ -424,6 +428,13 @@ public sealed class Plugin : IDalamudPlugin {
 		var btnRes = owner->AtkResNode;
 		var evt = btnRes.AtkEventManager.Event;
 		if (evt == null) return;
+
+		// 🔴🔴 這行以下就是「對正在關閉中的窗送事件 = 原生 AccessViolation」的地方,
+		// 而 AVE 是 corrupted-state exception, 呼叫端那圈 try/catch 完全攔不到 —— 唯一的防護是不要送第二次。
+		// 守衛放在所有「按不按得動」的檢查之後、緊接著送出之前: 它一回 true 就已經把「按過了」記下去,
+		// 登記完卻不按會白白封鎖到逃生口為止。下面兩次 ReceiveEvent 屬同一次邏輯按下
+		// (中間只是把 Handled 旗標清掉), 共用同一次放行。
+		if (!AddonPressGuard.TryBeginPress(addonName, (nint)addon)) return;
 
 		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt);
 		evt->State.StateFlags = AtkEventStateFlags.None;
@@ -451,7 +462,7 @@ public sealed class Plugin : IDalamudPlugin {
 				// （原本外面那圈 try/catch 對 AVE 完全無效，找不到節點也不需要靠丟例外來 continue）。
 				var text = TextOfNode(FindFirstNodeByType(btn->AtkComponentBase.UldManager, (int)NodeType.Text));
 				if (!text.Contains("參加") && !text.Contains("参加") && !text.Contains("Join")) continue;
-				Click(btn, cf);
+				Click(btn, cf, "ContentsFinder");
 				Log.Info("[RequestRace] 點擊 ContentsFinder 參加按鈕");
 				return true;
 			}
@@ -595,7 +606,7 @@ public sealed class Plugin : IDalamudPlugin {
 				// （corrupted-state exception，try/catch 攔不到），所以先驗節點再叫。
 				var resultNode = FirstAtkUnitBaseByType(RaceChocoboResult->UldManager, 1001);
 				if (resultNode != null)
-					Click(resultNode->GetAsAtkComponentButton(), RaceChocoboResult);
+					Click(resultNode->GetAsAtkComponentButton(), RaceChocoboResult, "RaceChocoboResult");
 			}
 		} catch (Exception) {
 			//ignored
