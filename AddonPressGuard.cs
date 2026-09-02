@@ -59,7 +59,32 @@ internal static class AddonPressGuard {
 	internal const int RePressEscapeFrames = 90;
 
 	/// <summary>輪詢解除時最多掃到第幾個同名實例；掃到第一個空的就提早停。</summary>
-	private const int MaxAddonIndex = 99;
+	/// <remarks>
+	/// <para>
+	/// 📌 256 是<b>遊戲自己夾的上限</b>，不是估出來的數字：<c>AtkUnitManager::GetAddonByName</c>（台服
+	/// <c>0x14064B960</c>）走的是 <c>AtkUnitManager.AllLoadedUnitsList</c>（<c>FieldOffset(0x6900)</c>），
+	/// 而 <c>AtkUnitList</c> 的項目陣列是 <c>FixedSizeArray256</c>（<c>AtkUnitList.cs:8</c>：項目在 <c>+0x8</c>、
+	/// <c>Count</c> 在 <c>+0x808</c> ⇒ 相差 <c>0x800</c> ＝ 256×8）；反組譯裡把 <c>Count</c> 讀進來之後緊接著
+	/// <c>mov ebp, 0x100</c> 就把它硬夾成 256。同名實例不可能多過清單本身的長度，所以 256 就是真值。
+	/// </para>
+	/// <para>
+	/// 🔑 <c>index</c> 的語意是「掃完整份清單、數第 <c>index</c> 個<b>同名</b>命中」，<b>不是</b>原始槽位編號
+	/// （反組譯：逐項比對名字，命中就把傳入的 index 減 1，減到 0 才回傳）⇒ 同名實例的索引是<b>連續</b>的，
+	/// 「掃到第一個空的就停」在數學上不可能漏掉還活著的實例。
+	/// </para>
+	/// <para>
+	/// ⚠️ 這個值以前是 99，沒有任何出處。取太小的後果是 <b>fail-open</b>：被記下的那扇窗排在天花板之外時，
+	/// <see cref="IsStillPresent"/> 會回 <see langword="false"/>、<see cref="ReleaseVanished"/> 就把記號清掉
+	/// ＝ 對一扇還活著、正在關閉的窗解除封鎖，下一幀再送一次事件就是本檔開頭講的那種 AVE。
+	/// 本外掛<b>完全沒有</b> AddonLifecycle 那一軌兜底（整個 repo 0 筆），天花板是唯一的防線。
+	/// </para>
+	/// <para>
+	/// 📌 改大不花成本：這段只在「還有按下記號沒被解除」時才跑（同時存在的記錄實務上 0~2 個），
+	/// 而且掃到第一個空的就返回 —— 正常情況下每次只跑 1~2 圈，天花板只有在真的同時開著 256 扇
+	/// 同名窗時才碰得到。
+	/// </para>
+	/// </remarks>
+	private const int MaxAddonIndex = 256;
 
 	private readonly record struct PressRecord(nint Address, long Frame, bool Reported);
 
