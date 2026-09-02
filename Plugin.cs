@@ -423,8 +423,7 @@ public sealed class Plugin : IDalamudPlugin {
 
 		if (!target->IsEnabled || !res->IsVisible()) return;
 
-		// 和原本一樣先把 OwnerNode 的 AtkResNode 複製成區域變數再取事件，
-		// 兩次 ReceiveEvent 用的是同一個事件指標（不做第二次即時重讀）。
+		// 和原本一樣先把 OwnerNode 的 AtkResNode 複製成區域變數再取事件。
 		var btnRes = owner->AtkResNode;
 		var evt = btnRes.AtkEventManager.Event;
 		if (evt == null) return;
@@ -432,12 +431,24 @@ public sealed class Plugin : IDalamudPlugin {
 		// 🔴🔴 這行以下就是「對正在關閉中的窗送事件 = 原生 AccessViolation」的地方,
 		// 而 AVE 是 corrupted-state exception, 呼叫端那圈 try/catch 完全攔不到 —— 唯一的防護是不要送第二次。
 		// 守衛放在所有「按不按得動」的檢查之後、緊接著送出之前: 它一回 true 就已經把「按過了」記下去,
-		// 登記完卻不按會白白封鎖到逃生口為止。下面兩次 ReceiveEvent 屬同一次邏輯按下
-		// (中間只是把 Handled 旗標清掉), 共用同一次放行。
+		// 登記完卻不按會白白封鎖到逃生口為止。
 		if (!AddonPressGuard.TryBeginPress(addonName, (nint)addon)) return;
 
-		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt);
-		evt->State.StateFlags = AtkEventStateFlags.None;
+		// 🔴 只送一次。原本這裡是「送出 → 把 StateFlags 清成 None → 再送一次」,兩次的引數完全相同,
+		// 而幀級守衛切不開同一次呼叫內的兩次送出:第一次若讓視窗開始關閉,第二次就落在關閉幀上。
+		// 兩行一起拿掉的依據是對台服 7.20 ffxiv_dx11.exe 的離線反組譯:
+		// ① ReceiveEvent 是 AtkEventListener 的虛擬函式槽 2,這裡是直接呼叫,完全繞過
+		//    AtkEventDispatcher::DispatchEvent(0x14060E710);StateFlags 的位元是那支派送函式與
+		//    節點解構在讀的,被呼叫的虛擬函式本身不看 ⇒ 清旗標對這次送出沒有任何作用。
+		// ② 派送函式每次派送前自己就會清掉 Handled 等 4 個單次派送用的位元
+		//    (and dword ptr [evt+0x28], 0xFFD4FFFF),「舊的 Handled 卡住送不出去」不可能發生。
+		// ③ 反過來 StateFlags 還存著必須留著的持久位元:Pooled(0x80)與 IsGlobalEvent(0x10)。
+		//    AtkEventManager::RegisterEvent(0x14060DE20)在註冊時寫入,派送函式刻意保留它們;
+		//    節點清事件時 test dword ptr [evt+0x28], 0x800000 (0x14062D23F) 就是靠 Pooled 決定要
+		//    走 free() 還是還回事件池 —— 清成 None 會讓池子配出來的區塊被丟進一般堆的 free(),
+		//    那是延遲發作、堆疊指向別處的堆積損毀。
+		// 對照組:ECommons ClickHelper.cs:143-151 對完全相同的形狀也是只送一次、不碰 StateFlags,
+		// 全艦隊 7 個外掛 27 個呼叫點都走那條路。
 		addon->ReceiveEvent(evt->State.EventType, (int)evt->Param, evt);
 	}
 
