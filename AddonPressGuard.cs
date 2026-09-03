@@ -156,6 +156,8 @@ internal static class AddonPressGuard {
 			Plugin.Log.Information($"[AddonPressGuard] 「{addonName}」（實例 0x{addon:X}）按下後 {waited} 幀仍是同一扇窗，判定為上一次按下沒生效而不是正在關閉，補按一次");
 		}
 		_pressed[addonName] = new PressRecord(addon, frame, false);
+		// 跨外掛重按診斷：只在真的送出按壓時記一行，刻意不節流。
+		Plugin.Log.Information($"[按窗診斷] plugin=LatihasChocobo addon={addonName} addr=0x{addon:X} key=");
 		return true;
 	}
 
