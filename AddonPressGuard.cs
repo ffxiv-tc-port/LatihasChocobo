@@ -39,7 +39,7 @@ namespace LatihasChocobo;
 /// </para>
 /// <para>
 /// 逃生口（<see cref="RePressEscapeFrames"/>）：按過卻既沒消失也沒被新窗取代，等遠超過關閉所需的幀數後
-/// 放行補按一次並寫 <c>Information</c>（使用者跑 LogLevel 2）。🔑 這不是節流 —— 節流記的是
+/// 放行補按一次並寫 <c>Information</c>（使用者跑 LogLevel 1）。🔑 這不是節流 —— 節流記的是
 /// 「上一次動作在哪一幀」，不是「這扇窗按過了」；真正的防護是「同一扇窗只按一次」。
 /// 這同時也是「位址被新窗重用」的兜底：那種情況最多多等 <see cref="RePressEscapeFrames"/> 幀，不會漏按。
 /// </para>

@@ -216,7 +216,7 @@ public sealed class Plugin : IDalamudPlugin {
 	// 作法：以「呼叫點標籤＋例外型別＋訊息」當 key，**第一次一定放行**（第一次發生的資訊最重要），
 	// 之後同一個 key 最多每 30 秒記一行，並帶上這段期間被壓掉幾次 —— 壓掉的次數本身要看得見，
 	// 不然「只記一行」會被誤讀成「只發生一次」。
-	// 維持 Warning 級（使用者跑 LogLevel 2，Warning 收得到）。
+	// 維持 Warning 級（使用者跑 LogLevel 1，Warning 收得到）。
 	private const long LogThrottleTicks = 30 * 10_000_000L;
 	private static readonly Dictionary<string, (long Last, int Suppressed)> _logThrottle = new();
 
