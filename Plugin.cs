@@ -508,10 +508,19 @@ public sealed class Plugin : IDalamudPlugin {
 	internal static void RequestRace() {
 		if (ClickContentsFinderJoin()) return;
 		OpenContentsFinder();
-		Task.Run(async () => {
-			await Task.Delay(3000);
-			await Framework.RunOnFrameworkThread(() => ClickContentsFinderJoin());
-		});
+		// 🔴🔴 原本是 Task.Run(async () => { await Task.Delay(3000); await
+		//    Framework.RunOnFrameworkThread(...) })。問題在 RunOnFrameworkThread 於
+		//    Framework.IsFrameworkUnloading 為真時**不排隊，而是就地在呼叫端的執行緒上執行**
+		//    （本 pin Dalamud/Game/Framework.cs）⇒ 關遊戲那三秒內，ClickContentsFinderJoin()
+		//    會在執行緒池的執行緒上解參考義務搜尋器的 addon 指標與 AtkComponentButton。
+		//    失敗形式是 AccessViolationException，那在 .NET Core 是 corrupted-state
+		//    exception，下游的 try/catch 完全攔不到，使用者看到的是遊戲直接關掉。
+		// 🔑 改用**帶延遲的** RunOnTick：本 pin 的 RunOnTick 在卸載期且 delay 不為 default
+		//    時回的是 Task.FromCanceled，委派根本不會執行 —— 天然免疫上面那條旁路，
+		//    不必自己判旗標。順便少一次執行緒池跳躍，而且不再 await 一個會被取消的 Task
+		//    （舊寫法在卸載期會讓那個 Task.Run 以 TaskCanceledException 收場、沒人觀察）。
+		// 📌 延遲長度與「延遲後在主執行緒上點一次」的語意逐字不變。
+		_ = Framework.RunOnTick(() => ClickContentsFinderJoin(), TimeSpan.FromSeconds(3));
 	}
 
 	private static void Notify() {
@@ -833,10 +842,17 @@ public sealed class Plugin : IDalamudPlugin {
 			}
 		}
 		if (Configuration.AutoDuty && Configuration.AutoDutyTerritory.Split('|').Contains(ClientState.TerritoryType.ToString())) {
-			Task.Run(async () => {
-				await Task.Delay(Configuration.AutoDutyWait * 1000);
-				if (Configuration.Enabled) await Framework.RunOnFrameworkThread(RequestRace);
-			});
+			// 🔴🔴 同上：舊寫法是 Task.Run + Task.Delay + RunOnFrameworkThread，而
+			//    RunOnFrameworkThread 在 IsFrameworkUnloading 為真時會就地在執行緒池的
+			//    執行緒上跑 RequestRace()，那一支會走 AgentModule.Instance()->
+			//    GetAgentByInternalId(...)->Show() 與義務搜尋器 addon 的按鈕點擊 ——
+			//    全是原生記憶體存取，而卸載期正是那些結構被拆掉的時候。
+			// 🔑 改用帶延遲的 RunOnTick：卸載期回已取消的 Task，委派不會執行。
+			// 📌 Configuration.Enabled 的判斷刻意留在委派**裡面**，維持舊行為的
+			//    「等完才看使用者當下有沒有關掉功能」，不是在排程當下先看一次。
+			_ = Framework.RunOnTick(() => {
+				if (Configuration.Enabled) RequestRace();
+			}, TimeSpan.FromSeconds(Configuration.AutoDutyWait));
 		}
 	}
 
