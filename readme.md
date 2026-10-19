@@ -1,20 +1,38 @@
-﻿> 有延迟裤链: https://raw.githubusercontent.com/Latihas/dalamud-plugins/main/repo.json
->
-> 或无延迟裤链: https://github.com/Latihas/dalamud-plugins/releases/latest/download/repo.json
->
-> 或CF加速裤链: https://dalamud-repo.latihas.workers.dev
->
-> 请选择一个就行了，不同裤链之间的更新检查不通用
+# LatihasChocobo
 
-![](https://socialify.git.ci/Latihas/LatihasChocobo/image?description=1&forks=1&issues=1&language=1&name=1&owner=1&pattern=Transparent&pulls=1&stargazers=1&theme=Auto)
+[LatihasChocobo](https://github.com/Latihas/LatihasChocobo) 的台服移植版。自動跑陸行鳥競賽的插件。
 
-自动化陆行鸟竞赛。
+## 功能
 
-支持循环匹配练级，一般1-40级需要2h。
+- **競賽自動化**：自動加速、轉向、跳躍、使用道具與技能、確認結果視窗（透過對遊戲視窗送出按鍵操作，和玩家自己按鍵一樣）
+- **自動循環報名**：進入設定的地點後自動開啟任務搜尋器並按下「參加」；也可按「立刻匹配」手動報名一次。陸行鳥競賽等級升到 40 級時自動停止並發出提示音
+- **障礙迴避**：偵測陷阱、減速區、障礙怪物並主動迴避，主動靠近加速道具、寶箱與體力回復物件
+- **賽道記憶學習**：逐場累積賽道地形、邊界與路徑資料，閃避與彎道預轉向隨場次增加而更準；可跑「邊界校正」（自動跑 2 場，分別靠左、靠右）。資料存成檔案，可從「賽道」分頁開啟資料夾或複製路徑
+- **賽道視覺化**（「賽道」分頁）：路線圖、坡度剖面圖、各賽道資料統計
+- **即時資訊顯示**（「賽鳥」分頁）：競賽等級、經驗值、可訓練次數、培育屬性、技能、速度、道具與加速狀態等
+- **背包**分頁：依星級篩選陸行鳥配種／出賽／退役登記書
+- **物件**分頁：顯示附近所有物件 DataId，方便識別新障礙
 
-稍微聪明一点的AI, 会吃道具用道具，会动态调整速度。
+## 指令
 
-支持配种凭证筛选，看起来更方便
+- `/lc` 或 `/latihaschocobo`：開啟插件介面
 
-如果我AFK了或者忘记更新了，你也可以直接修改Constant.cs中的OPCODE_DUTY(用任意抓包软件即可, 本人喜欢https:
-//github.com/extrant/FFXIVNetworkPacketAnalysisTool),注意顺序,实际使用在Plugin.cs的RequestRace函数
+## 設定需求
+
+- 「按鍵」頁需與遊戲內按鍵設定一致（插件透過模擬按鍵操作遊戲）
+- 技能欄位需對應道具格與衝刺技能
+- 使用自動循環報名前，需先手動在任務搜尋器選好競賽項目，並填入離開賽場後會回到的地點
+
+## 台服版的修改
+
+- 報名改成開啟任務搜尋器按「參加」，不送自組封包（上游是直接送報名封包）
+- 自動競賽邏輯全面改寫：障礙迴避、賽道記憶學習與視覺化、背包分頁
+- 不對正在關閉中的視窗重複按下，關遊戲瞬間也不會從背景執行緒開任務搜尋器，降低崩潰風險
+- 賽中卸載插件、取消「啟用」或升到 40 級自動停止時，會放開插件按住的鍵；離開賽道後不會再自己按鍵
+- 介面繁體中文化
+
+## 開發文件
+
+內部架構、主迴圈邏輯、賽道記憶系統細節見 [`.claude/skills/latihaschocobo-dev/SKILL.md`](.claude/skills/latihaschocobo-dev/SKILL.md)。
+
+原作者：[Latihas](https://github.com/Latihas)

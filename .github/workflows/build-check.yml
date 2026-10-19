@@ -1,0 +1,29 @@
+name: Build Check
+
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            9.x
+            10.x
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.tool_cache }}/dotnet
+      - name: Download Dalamud (pinned TC-compatible build)
+        shell: pwsh
+        run: |
+          $pin = 'D:\ffxiv-tc-port\dalamud-pins\dalamud-pin-v13.0.0.17\dalamud-api13-net9.zip'
+          if (-not (Test-Path -LiteralPath $pin)) { throw "pinned Dalamud not found on this runner: $pin" }
+          Copy-Item -LiteralPath $pin -Destination dalamud-pinned.zip
+          Expand-Archive -Force dalamud-pinned.zip "$env:RUNNER_TEMP\dalamud-pinned\"
+      - name: Build with dotnet
+        run: dotnet build --configuration Release -p:DalamudLibPath="$env:RUNNER_TEMP\dalamud-pinned\"
