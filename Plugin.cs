@@ -91,6 +91,11 @@ public sealed class Plugin : IDalamudPlugin {
 	private static long _lastResultClaimAttempt, _resultClaimUntil;
 	// 「暫停先於結果窗」用 Press 呼叫序號比先後：同一次 Press 裡才開始的暫停不算數（窗已在前一幀 PostSetup）。
 	private static long _pressSeq, _resultClaimFromSeq, _resultFirstSeenSeq;
+	private enum ResultClaim { Failed, Paused, YesAlreadyAbsent }
+	// true＝目前的認定只是「YesAlready 不在」，不是真的暫停；每次 Press 都重查它出現了沒。
+	private static bool _resultClaimByAbsence;
+	private static object? _yesAlreadyListSnapshot;
+	private static IExposedPlugin[] _yesAlreadyEntries = [];
 	private static bool _resultClaimFailLogged;
 	private readonly MainWindow _mainWindow;
 	// ReSharper disable once MemberCanBePrivate.Global
@@ -688,33 +693,53 @@ public sealed class Plugin : IDalamudPlugin {
 	// 結果窗出現前已確定它不會按，插件才按（見 ResultClaimCoversWindow）。只在主執行緒呼叫。
 	private static void TickResultClaim() {
 		var now = Environment.TickCount64;
-		if (_lastResultClaimAttempt != 0 && now - _lastResultClaimAttempt < ResultClaimRenewMs) return;
+		var absenceBroken = _resultClaimByAbsence && _resultClaimUntil > now && IsYesAlreadyPresent();
+		if (!absenceBroken && _lastResultClaimAttempt != 0 && now - _lastResultClaimAttempt < ResultClaimRenewMs) return;
 		_lastResultClaimAttempt = now;
-		if (!TryPauseYesAlreadyResult()) {
+		var claim = TryPauseYesAlreadyResult();
+		if (claim == ResultClaim.Failed) {
 			_resultClaimUntil = 0;
+			_resultClaimByAbsence = false;
 			if (!_resultClaimFailLogged) {
 				_resultClaimFailLogged = true;
 				Log.Info("[RaceChocoboResult] 無法確認 YesAlready 不會按賽鳥結果窗，這場的結果窗交給它或你自己按");
 			}
 			return;
 		}
-		if (_resultClaimUntil <= now) _resultClaimFromSeq = _pressSeq;
+		// 從「不在」轉成真的暫停：在那之前已出現的結果窗可能已被它在 PostSetup 按過，起點重算。
+		if (_resultClaimUntil <= now || (_resultClaimByAbsence && claim == ResultClaim.Paused)) _resultClaimFromSeq = _pressSeq;
+		_resultClaimByAbsence = claim == ResultClaim.YesAlreadyAbsent;
 		_resultClaimUntil = now + ResultClaimMs;
 	}
 
-	// true＝確定 YesAlready 這段時間不會按：已暫停、那個功能找不到或沒啟用、或它根本沒載入。
-	private static bool TryPauseYesAlreadyResult() {
+	// Paused／YesAlreadyAbsent＝確定 YesAlready 這段時間不會按（已暫停、那個功能找不到或沒啟用、或它根本沒載入）。
+	private static ResultClaim TryPauseYesAlreadyResult() {
 		try {
 			_yesAlreadyPauseBother ??= PluginInterface.GetIpcSubscriber<string, int, bool>(YesAlreadyPauseBotherIpc);
 			_yesAlreadyPauseBother.InvokeFunc(YesAlreadyResultFeature, ResultClaimMs);
-			return true;
+			return ResultClaim.Paused;
 		} catch (IpcNotReadyError) {
 			// 沒載入＝不會按；載入了卻沒有這個端點＝版本不明，不能假設它不會按。
-			return !PluginInterface.InstalledPlugins.Any(static p => p.InternalName == "YesAlready" && p.IsLoaded);
+			return IsYesAlreadyLoaded() ? ResultClaim.Failed : ResultClaim.YesAlreadyAbsent;
 		} catch (Exception e) {
 			Log.Info(e, "[RaceChocoboResult] 呼叫 YesAlready.PauseBother 失敗");
-			return false;
+			return ResultClaim.Failed;
 		}
+	}
+
+	// 端點在 YesAlready 建構子裡比監聽器先註冊 ⇒ HasFunction 涵蓋「載入中、IsLoaded 還沒轉 true」那段。每幀呼叫，要便宜。
+	private static bool IsYesAlreadyPresent() => _yesAlreadyPauseBother?.HasFunction == true || IsYesAlreadyLoaded();
+
+	// 清單參照沒變就沿用上次找到的包裝、只讀即時的 IsLoaded；清單一變（安裝、更新換實例）就重找。只在主執行緒呼叫。
+	private static bool IsYesAlreadyLoaded() {
+		var list = PluginInterface.InstalledPlugins;
+		if (!ReferenceEquals(list, _yesAlreadyListSnapshot)) {
+			_yesAlreadyListSnapshot = list;
+			_yesAlreadyEntries = list.Where(static p => p.InternalName == "YesAlready").ToArray();
+		}
+		foreach (var p in _yesAlreadyEntries)
+			if (p.IsLoaded) return true;
+		return false;
 	}
 
 	// 結果窗第一次被看到之前，暫停就已經生效而且現在還有效。
@@ -728,6 +753,7 @@ public sealed class Plugin : IDalamudPlugin {
 		_resultClaimFromSeq = 0;
 		_resultClaimUntil = 0;
 		_resultFirstSeenSeq = 0;
+		_resultClaimByAbsence = false;
 		_resultClaimFailLogged = false;
 	}
 
