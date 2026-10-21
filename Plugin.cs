@@ -85,9 +85,12 @@ public sealed class Plugin : IDalamudPlugin {
 	private const string YesAlreadyPauseBotherIpc = "YesAlready.PauseBother";
 	private const string YesAlreadyResultFeature = "RaceChocoboResult";
 	private const int ResultClaimMs = 60_000;
-	private const long ResultClaimRenewTicks = 20 * TimeSpan.TicksPerSecond;
+	private const long ResultClaimRenewMs = 20_000;
 	private static ICallGateSubscriber<string, int, bool>? _yesAlreadyPauseBother;
-	private static long _lastResultClaimAttempt, _resultClaimFrom, _resultClaimUntil, _resultFirstSeenTicks;
+	// 到期時刻與 YesAlready 同一種時鐘（Environment.TickCount64，毫秒），系統時間被調動也不會兩邊對不上。
+	private static long _lastResultClaimAttempt, _resultClaimUntil;
+	// 「暫停先於結果窗」用 Press 呼叫序號比先後：同一次 Press 裡才開始的暫停不算數（窗已在前一幀 PostSetup）。
+	private static long _pressSeq, _resultClaimFromSeq, _resultFirstSeenSeq;
 	private static bool _resultClaimFailLogged;
 	private readonly MainWindow _mainWindow;
 	// ReSharper disable once MemberCanBePrivate.Global
@@ -684,8 +687,8 @@ public sealed class Plugin : IDalamudPlugin {
 	// YesAlready 的「賽鳥結果」功能在結果窗 PostSetup 當下就按；比賽中持續請它暫停，
 	// 結果窗出現前已確定它不會按，插件才按（見 ResultClaimCoversWindow）。只在主執行緒呼叫。
 	private static void TickResultClaim() {
-		var now = DateTime.Now.Ticks;
-		if (_lastResultClaimAttempt != 0 && now - _lastResultClaimAttempt < ResultClaimRenewTicks) return;
+		var now = Environment.TickCount64;
+		if (_lastResultClaimAttempt != 0 && now - _lastResultClaimAttempt < ResultClaimRenewMs) return;
 		_lastResultClaimAttempt = now;
 		if (!TryPauseYesAlreadyResult()) {
 			_resultClaimUntil = 0;
@@ -695,8 +698,8 @@ public sealed class Plugin : IDalamudPlugin {
 			}
 			return;
 		}
-		if (_resultClaimUntil <= now) _resultClaimFrom = now;
-		_resultClaimUntil = now + ResultClaimMs * TimeSpan.TicksPerMillisecond;
+		if (_resultClaimUntil <= now) _resultClaimFromSeq = _pressSeq;
+		_resultClaimUntil = now + ResultClaimMs;
 	}
 
 	// true＝確定 YesAlready 這段時間不會按：已暫停、那個功能找不到或沒啟用、或它根本沒載入。
@@ -716,20 +719,20 @@ public sealed class Plugin : IDalamudPlugin {
 
 	// 結果窗第一次被看到之前，暫停就已經生效而且現在還有效。
 	private static bool ResultClaimCoversWindow() {
-		var now = DateTime.Now.Ticks;
-		if (_resultFirstSeenTicks == 0) _resultFirstSeenTicks = now;
-		return _resultClaimUntil > now && _resultClaimFrom < _resultFirstSeenTicks;
+		if (_resultFirstSeenSeq == 0) _resultFirstSeenSeq = _pressSeq;
+		return _resultClaimUntil > Environment.TickCount64 && _resultClaimFromSeq < _resultFirstSeenSeq;
 	}
 
 	private static void ResetResultClaim() {
 		_lastResultClaimAttempt = 0;
-		_resultClaimFrom = 0;
+		_resultClaimFromSeq = 0;
 		_resultClaimUntil = 0;
-		_resultFirstSeenTicks = 0;
+		_resultFirstSeenSeq = 0;
 		_resultClaimFailLogged = false;
 	}
 
 	private static unsafe void Press(IFramework framework) {
+		_pressSeq++;
 		var externalStop = Interlocked.Exchange(ref _pendingExternalStop, null);
 		if (externalStop != null) StopAll(externalStop);
 		CheckRankUp();
@@ -756,7 +759,7 @@ public sealed class Plugin : IDalamudPlugin {
 		try {
 			var ptr = GameGui.GetAddonByName("RaceChocoboResult", 1).Address;
 			if (ptr == IntPtr.Zero) {
-				_resultFirstSeenTicks = 0;
+				_resultFirstSeenSeq = 0;
 			} else if (ResultClaimCoversWindow()) {
 				var RaceChocoboResult = (AtkUnitBase*)ptr;
 				// 節點找不到時 FirstAtkUnitBaseByType 會丟一般例外（外面這圈接得到）；
