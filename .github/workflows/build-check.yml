@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: [self-hosted, Windows, X64]
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,9 +21,10 @@ jobs:
       - name: Download Dalamud (pinned TC-compatible build)
         shell: pwsh
         run: |
-          $pin = 'D:\ffxiv-tc-port\dalamud-pins\dalamud-pin-v13.0.0.17\dalamud-api13-net9.zip'
-          if (-not (Test-Path -LiteralPath $pin)) { throw "pinned Dalamud not found on this runner: $pin" }
-          Copy-Item -LiteralPath $pin -Destination dalamud-pinned.zip
+          $pinUrl = 'https://github.com/ffxiv-tc-port/Dalamud/releases/download/dalamud-pin-v13.0.0.17/dalamud-api13-net9.zip'
+          Invoke-WebRequest -Uri $pinUrl -OutFile dalamud-pinned.zip
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath dalamud-pinned.zip).Hash
+          if ($sha -ne '1481704F4DACBE96070F7B306FF1CE4BD77DB69C19CD74969FE296643E49EB5B') { throw "pinned Dalamud SHA256 mismatch: $sha" }
           Expand-Archive -Force dalamud-pinned.zip "$env:RUNNER_TEMP\dalamud-pinned\"
       - name: Build with dotnet
         run: dotnet build --configuration Release -p:DalamudLibPath="$env:RUNNER_TEMP\dalamud-pinned\"
