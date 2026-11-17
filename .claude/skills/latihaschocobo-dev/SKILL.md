@@ -9,9 +9,9 @@ Dalamud 插件，自動化 FFXIV 陸行鳥競賽（衝刺、閃避、拾取、�
 
 ## 建置與環境（TC / API13）
 
-- 現況：分支 **`tc-7.20`**、`Dalamud.NET.Sdk/13.0.0`、`LatihasChocobo.json` 的 `DalamudApiLevel` 是 **13**。
+- 現況：分支 **`tc-7.30`**、`Dalamud.NET.Sdk/13.0.0`、`LatihasChocobo.json` 的 `DalamudApiLevel` 是 **13**。
   `tc-7.15` 是凍結的 API12 archive，不要往上面提交（GitHub 的 `origin/HEAD` 還指著 `tc-7.15`，
-  clone 完先 `git checkout tc-7.20`）。
+  clone 完先 `git checkout tc-7.30`）。
 - 🔴 **直接 `dotnet build` 會失敗**：`Dalamud.NET.Sdk` 預設吃 `DALAMUD_HOME` 環境變數，
   本機那個變數指向 `%APPDATA%\FFXIVSimpleLauncher\Dalamud\Injector` ——
   **那裡是啟動器自帶的舊 Dalamud 12.0.2.0**（實測 FileVersion，沒有 `Dalamud.Bindings.ImGui.dll`），
