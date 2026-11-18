@@ -5,6 +5,7 @@ using System.Linq;
 using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Dalamud.Utility;
 
 namespace LatihasChocobo;
 
@@ -55,16 +56,27 @@ public static class TrackMemory {
 		Load();
 	}
 
+	// 讀壞時選「先備份再用空資料」：下一場比賽結束或清除賽道時會整份覆寫原檔。
 	private static void Load() {
 		if (_savePath == null || !File.Exists(_savePath)) return;
-		try { _db = JsonSerializer.Deserialize<Dictionary<ushort, TrackData>>(File.ReadAllText(_savePath)) ?? new(); }
-		catch { _db = new(); }
+		string? problem;
+		try {
+			var loaded = JsonSerializer.Deserialize<Dictionary<ushort, TrackData>>(File.ReadAllText(_savePath));
+			if (loaded != null) { _db = loaded; return; }
+			problem = "內容無法辨識（解析結果是 null）";
+		} catch (Exception e) {
+			problem = $"{e.GetType().Name}: {e.Message}";
+		}
+		_db = new();
+		ConfigFileSafety.BackupUnreadable(_savePath, $"賽道記憶讀不懂（{problem}），這次改用空資料",
+			"下一場比賽結束或清除賽道時，會用目前的資料整份覆寫 track_memory.json。",
+			m => Plugin.Log.Information("{Message:l}", m));
 	}
 
 	public static void Save() {
 		if (_savePath == null) return;
-		try { File.WriteAllText(_savePath, JsonSerializer.Serialize(_db, new JsonSerializerOptions { WriteIndented = true })); }
-		catch { }
+		try { FilesystemUtil.WriteAllTextSafe(_savePath, JsonSerializer.Serialize(_db, new JsonSerializerOptions { WriteIndented = true })); }
+		catch (Exception e) { Plugin.Log.Warning("[設定] 寫入 track_memory.json 失敗（{Type}: {Error}），原檔維持上一次的內容。", e.GetType().Name, e.Message); }
 	}
 
 	public static void StartRace() {
