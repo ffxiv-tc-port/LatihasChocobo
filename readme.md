@@ -31,8 +31,14 @@
 - 賽中卸載插件、取消「啟用」或升到 40 級自動停止時，會放開插件按住的鍵；離開賽道後不會再自己按鍵
 - 介面繁體中文化
 
+## 安裝
+
+`/xlsettings` 開「Dalamud 設定」→「試驗性功能」→「第三方插件倉庫」，加入 `https://raw.githubusercontent.com/ffxiv-tc-port/DalamudPluginsTC/main/repo.json` 並啟用、儲存，再到「插件管理員」（`/xlplugins`）安裝；同一個插件只裝這裡的版本，不要同時裝上游版。
+
 ## 開發文件
 
 內部架構、主迴圈邏輯、賽道記憶系統細節見 [`.claude/skills/latihaschocobo-dev/SKILL.md`](.claude/skills/latihaschocobo-dev/SKILL.md)。
 
 原作者：[Latihas](https://github.com/Latihas)
+
+授權：上游未附授權。
